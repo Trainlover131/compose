@@ -25,9 +25,12 @@ async def lifespan(app: FastAPI):
     """Run DB migrations on startup."""
     from apps.api.models.database import init_db
 
-    logger.info("Initializing database tables...")
-    init_db()
-    logger.info("Database ready.")
+    try:
+        logger.info("Initializing database tables...")
+        init_db()
+        logger.info("Database ready.")
+    except Exception as e:
+        logger.error(f"Database init failed (will retry on first request): {e}")
     yield
 
 
@@ -96,3 +99,12 @@ async def admin_jobs():
         ]
     finally:
         db.close()
+
+
+if __name__ == "__main__":
+    import os
+
+    import uvicorn
+
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("apps.api.main:app", host="0.0.0.0", port=port)

@@ -149,20 +149,35 @@ cd apps/api && pip install -r requirements.txt && pytest tests/ -v
 
 ## Deploy to Railway (API backend)
 
-The repo root contains a `Dockerfile` and `railway.toml` that Railway picks up automatically.
+The repo root contains a `Dockerfile` and `railway.toml` that Railway uses automatically. No Root Directory change is needed — Railway builds from repo root.
 
-### 1. Create project and database
+### How it works
 
-```
+- `railway.toml` sets `builder = "DOCKERFILE"` and points at the root `Dockerfile`.
+- The Dockerfile installs Python 3.12 + FFmpeg + pip deps, copies `apps/` and `assets/`.
+- `CMD ["python", "-m", "apps.api.main"]` starts uvicorn on `0.0.0.0:$PORT` (Railway injects `PORT`).
+- DB tables are auto-created on startup via FastAPI lifespan. If Postgres is briefly unavailable the healthcheck still passes — init retries on first request.
+- `GET /health` returns 200 immediately (no DB dependency).
+
+### 1. Create project and add Postgres
+
+```bash
 railway init                          # or create via dashboard
-railway add --plugin postgresql       # adds Postgres; sets DATABASE_URL
+railway add --plugin postgresql       # sets DATABASE_URL automatically
 ```
 
-Optionally add Redis the same way (`railway add --plugin redis`). Without Redis the worker runs jobs in-process — fine for MVP.
+Postgres is required for job storage. Redis and a separate worker service can be added later — without Redis the API processes jobs in-thread, which is fine for MVP.
 
 ### 2. Connect repo
 
-Link this GitHub repo to a Railway service. Railway will detect the root `Dockerfile` and build from there (FFmpeg is included).
+Link the GitHub repo to a Railway service. Important settings:
+
+| Setting | Value |
+|---|---|
+| **Root Directory** | `/` (repo root — the default) |
+| **Builder** | Dockerfile (auto-detected via `railway.toml`) |
+
+Do **not** set Root Directory to `apps/api` — the Dockerfile needs repo-root context to COPY `apps/` and `assets/`.
 
 ### 3. Set environment variables
 
@@ -171,29 +186,40 @@ In the Railway service **Variables** tab:
 | Variable | Value |
 |---|---|
 | `DATABASE_URL` | *(auto-set by Railway Postgres plugin)* |
-| `REDIS_URL` | *(auto-set by Railway Redis plugin, or omit)* |
 | `ALLOWED_ORIGINS` | `https://your-app.vercel.app` (comma-separated if multiple) |
-| `STORAGE_MODE` | `local` *(or `r2` if using Cloudflare R2)* |
+| `STORAGE_MODE` | `local` |
 | `ANTHROPIC_API_KEY` | your key *(optional — demo mode without it)* |
 | `PEXELS_API_KEY` | your key *(optional — no b-roll without it)* |
 | `WHISPER_MODEL` | `base` |
 
-`PORT` is injected by Railway automatically — do **not** set it manually.
+Do **not** set `PORT` — Railway injects it automatically.
+
+Optional (add later):
+
+| Variable | Value |
+|---|---|
+| `REDIS_URL` | *(auto-set by Railway Redis plugin)* |
+| `R2_*` vars | *(only if using Cloudflare R2 for storage)* |
 
 ### 4. Deploy
 
-Push to main or trigger a deploy in the Railway dashboard. Railway will:
+Push to main or trigger a deploy in the dashboard. Railway will:
 - Build the root `Dockerfile` (Python 3.12 + FFmpeg + pip deps)
 - Start uvicorn on `0.0.0.0:$PORT`
-- Run DB migrations automatically on startup (via FastAPI lifespan)
-- Health check at `/health`
+- Health check `GET /health` → 200 (30s timeout)
+- Auto-create DB tables on first startup
+
+Verify: `curl https://your-api.up.railway.app/health` should return `{"status":"healthy"}`.
 
 ### 5. Deploy frontend to Vercel
 
 Deploy `apps/web/` to Vercel separately:
-- **Root Directory**: `apps/web`
-- **Framework Preset**: Next.js
-- **Environment variable**: `NEXT_PUBLIC_API_URL` = `https://your-railway-api.up.railway.app`
+
+| Vercel setting | Value |
+|---|---|
+| **Root Directory** | `apps/web` |
+| **Framework Preset** | Next.js |
+| **Environment variable** | `NEXT_PUBLIC_API_URL` = `https://your-api.up.railway.app` |
 
 ### How it fits together
 

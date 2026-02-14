@@ -22,15 +22,9 @@ RUN mkdir -p /data/storage
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
-
-# Railway injects PORT; default to 8000 for local dev
 ENV PORT=8000
 
 EXPOSE ${PORT}
 
-# Railway health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
-
-# Use shell form so $PORT is expanded at runtime
-CMD uvicorn apps.api.main:app --host 0.0.0.0 --port ${PORT}
+# Exec form — apps/api/main.py __main__ block reads $PORT at runtime
+CMD ["python", "-m", "apps.api.main"]
