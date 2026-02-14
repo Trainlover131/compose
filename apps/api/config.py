@@ -18,6 +18,13 @@ R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "compose-media")
 R2_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL", "")
 
+# CORS
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "*").split(",")
+    if origin.strip()
+]
+
 # APIs
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")

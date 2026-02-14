@@ -47,9 +47,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: >
-      sh -c "cd /app && python -m apps.api.db_init &&
-             uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload"
+    command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload
 
   worker:
     build:

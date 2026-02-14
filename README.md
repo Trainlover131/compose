@@ -54,16 +54,18 @@ Runs without API keys with limited features:
 |----------|----------|-------------|
 | `ANTHROPIC_API_KEY` | No* | Claude Haiku for AI edit planning |
 | `PEXELS_API_KEY` | No* | Pexels stock video for b-roll |
+| `ALLOWED_ORIGINS` | No | Comma-separated CORS origins. Default `*`. Set to your Vercel URL in prod. |
+| `PORT` | No | Server port. Railway sets this automatically. Default `8000`. |
 | `STORAGE_MODE` | No | `local` (default) or `r2` |
 | `R2_ACCESS_KEY_ID` | If R2 | Cloudflare R2 access key |
 | `R2_SECRET_ACCESS_KEY` | If R2 | Cloudflare R2 secret key |
 | `R2_ENDPOINT_URL` | If R2 | Cloudflare R2 endpoint |
 | `R2_BUCKET_NAME` | If R2 | R2 bucket name |
 | `WHISPER_MODEL` | No | Whisper model size: `base` (default), `small`, `medium` |
-| `DATABASE_URL` | No | PostgreSQL connection string |
-| `REDIS_URL` | No | Redis connection string |
+| `DATABASE_URL` | Yes (prod) | PostgreSQL connection string |
+| `REDIS_URL` | No | Redis connection string. Jobs run in-process if absent. |
 
-*Demo mode activates automatically when keys are missing.
+*Demo mode activates automatically when API keys are missing.
 
 ## API Endpoints
 
@@ -145,14 +147,62 @@ make test
 cd apps/api && pip install -r requirements.txt && pytest tests/ -v
 ```
 
-## Deploy to Railway
+## Deploy to Railway (API backend)
 
-1. Create a new Railway project
-2. Add services: PostgreSQL, Redis
-3. Add the API service from `apps/api/`
-4. Add the Web service from `apps/web/`
-5. Set environment variables (API keys, DATABASE_URL, REDIS_URL)
-6. Deploy
+The repo root contains a `Dockerfile` and `railway.toml` that Railway picks up automatically.
+
+### 1. Create project and database
+
+```
+railway init                          # or create via dashboard
+railway add --plugin postgresql       # adds Postgres; sets DATABASE_URL
+```
+
+Optionally add Redis the same way (`railway add --plugin redis`). Without Redis the worker runs jobs in-process — fine for MVP.
+
+### 2. Connect repo
+
+Link this GitHub repo to a Railway service. Railway will detect the root `Dockerfile` and build from there (FFmpeg is included).
+
+### 3. Set environment variables
+
+In the Railway service **Variables** tab:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | *(auto-set by Railway Postgres plugin)* |
+| `REDIS_URL` | *(auto-set by Railway Redis plugin, or omit)* |
+| `ALLOWED_ORIGINS` | `https://your-app.vercel.app` (comma-separated if multiple) |
+| `STORAGE_MODE` | `local` *(or `r2` if using Cloudflare R2)* |
+| `ANTHROPIC_API_KEY` | your key *(optional — demo mode without it)* |
+| `PEXELS_API_KEY` | your key *(optional — no b-roll without it)* |
+| `WHISPER_MODEL` | `base` |
+
+`PORT` is injected by Railway automatically — do **not** set it manually.
+
+### 4. Deploy
+
+Push to main or trigger a deploy in the Railway dashboard. Railway will:
+- Build the root `Dockerfile` (Python 3.12 + FFmpeg + pip deps)
+- Start uvicorn on `0.0.0.0:$PORT`
+- Run DB migrations automatically on startup (via FastAPI lifespan)
+- Health check at `/health`
+
+### 5. Deploy frontend to Vercel
+
+Deploy `apps/web/` to Vercel separately:
+- **Root Directory**: `apps/web`
+- **Framework Preset**: Next.js
+- **Environment variable**: `NEXT_PUBLIC_API_URL` = `https://your-railway-api.up.railway.app`
+
+### How it fits together
+
+```
+Vercel (apps/web)  ──HTTPS──▶  Railway (root Dockerfile → FastAPI)
+                                   │
+                                   ├── Railway Postgres (DATABASE_URL)
+                                   └── Railway Redis    (REDIS_URL, optional)
+```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for scaling guidance.
 
