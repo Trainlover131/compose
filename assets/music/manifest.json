@@ -1,0 +1,55 @@
+{
+  "version": "1",
+  "tracks": [
+    {
+      "id": "upbeat-energy",
+      "title": "Upbeat Energy",
+      "filename": "upbeat-energy.mp3",
+      "duration_sec": 120,
+      "bpm": 128,
+      "mood": ["energetic", "upbeat", "fast"],
+      "tags": ["creator", "snappy"],
+      "license": "royalty-free-placeholder"
+    },
+    {
+      "id": "cinematic-ambient",
+      "title": "Cinematic Ambient",
+      "filename": "cinematic-ambient.mp3",
+      "duration_sec": 180,
+      "bpm": 80,
+      "mood": ["cinematic", "ambient", "calm"],
+      "tags": ["cinematic", "documentary"],
+      "license": "royalty-free-placeholder"
+    },
+    {
+      "id": "clean-podcast",
+      "title": "Clean Podcast",
+      "filename": "clean-podcast.mp3",
+      "duration_sec": 150,
+      "bpm": 90,
+      "mood": ["clean", "minimal", "neutral"],
+      "tags": ["podcast", "clipper"],
+      "license": "royalty-free-placeholder"
+    },
+    {
+      "id": "luxury-smooth",
+      "title": "Luxury Smooth",
+      "filename": "luxury-smooth.mp3",
+      "duration_sec": 160,
+      "bpm": 85,
+      "mood": ["luxury", "smooth", "elegant"],
+      "tags": ["luxury", "real-estate"],
+      "license": "royalty-free-placeholder"
+    },
+    {
+      "id": "study-lofi",
+      "title": "Study Lo-Fi",
+      "filename": "study-lofi.mp3",
+      "duration_sec": 200,
+      "bpm": 75,
+      "mood": ["study", "focus", "lofi", "calm"],
+      "tags": ["study", "explainer"],
+      "license": "royalty-free-placeholder"
+    }
+  ]
+}
