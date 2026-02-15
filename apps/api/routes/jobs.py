@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 
 from apps.api.config import MAX_INPUT_DURATION_SEC, MAX_UPLOAD_SIZE_MB, REDIS_URL
@@ -118,14 +118,29 @@ def _check_watchdog(job: Job, db: Session):
 
 
 @router.post("/jobs", response_model=JobCreateResponse)
-async def create_job(
-    file: UploadFile = File(...),
-    prompt: str = Form(default="Make this into an engaging short-form video"),
-    preset_id: str = Form(default="snappy-creator"),
-    db: Session = Depends(get_db),
-):
-    """Upload a video and create a new editing job."""
-    # Validate file type
+async def create_job(request: Request, db: Session = Depends(get_db)):
+    """Create a new editing job.
+
+    Accepts two modes:
+      - **Multipart** (Content-Type: multipart/form-data): upload file + form fields.
+        Used for small files or when R2 is not configured.
+      - **JSON** (Content-Type: application/json): { file_key, prompt, preset_id, duration_sec }.
+        Used after the browser has uploaded directly to R2 via a presigned URL.
+    """
+    content_type = request.headers.get("content-type", "")
+
+    if "application/json" in content_type:
+        return await _create_job_from_key(request, db)
+    return await _create_job_from_upload(request, db)
+
+
+async def _create_job_from_upload(request: Request, db: Session) -> JobCreateResponse:
+    """Original multipart upload path — API receives the file bytes."""
+    form = await request.form()
+    file = form.get("file")
+    if not file or not hasattr(file, "filename"):
+        raise HTTPException(400, "No file provided")
+
     if not file.filename:
         raise HTTPException(400, "No file provided")
 
@@ -133,13 +148,11 @@ async def create_job(
     if ext not in {".mp4", ".mov", ".webm", ".mkv"}:
         raise HTTPException(400, f"Unsupported file type: {ext}. Use MP4 or MOV.")
 
-    # Read file
     content = await file.read()
     size_mb = len(content) / (1024 * 1024)
     if size_mb > MAX_UPLOAD_SIZE_MB:
         raise HTTPException(400, f"File too large: {size_mb:.1f}MB (max {MAX_UPLOAD_SIZE_MB}MB)")
 
-    # Save to temp and check duration
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
@@ -152,13 +165,56 @@ async def create_job(
             f"Video too long: {duration:.0f}s (max {MAX_INPUT_DURATION_SEC}s)",
         )
 
-    # Store file
     job_id = str(uuid.uuid4())
     file_key = f"originals/{job_id}/{file.filename}"
     storage.save_file(tmp_path, file_key)
     Path(tmp_path).unlink(missing_ok=True)
 
-    # Create job record
+    prompt = form.get("prompt", "Make this into an engaging short-form video")
+    preset_id = form.get("preset_id", "snappy-creator")
+    if isinstance(prompt, bytes):
+        prompt = prompt.decode()
+    if isinstance(preset_id, bytes):
+        preset_id = preset_id.decode()
+
+    return _persist_and_enqueue(db, job_id, file_key, file.filename, prompt, preset_id, duration)
+
+
+async def _create_job_from_key(request: Request, db: Session) -> JobCreateResponse:
+    """JSON mode — file was already uploaded to R2 via presigned URL."""
+    body = await request.json()
+
+    file_key = body.get("file_key")
+    if not file_key or not isinstance(file_key, str):
+        raise HTTPException(400, "file_key is required")
+
+    # Derive filename from the key (originals/{uuid}/{filename})
+    original_filename = file_key.rsplit("/", 1)[-1] if "/" in file_key else file_key
+
+    ext = Path(original_filename).suffix.lower()
+    if ext not in {".mp4", ".mov", ".webm", ".mkv"}:
+        raise HTTPException(400, f"Unsupported file type: {ext}. Use MP4 or MOV.")
+
+    prompt = body.get("prompt", "Make this into an engaging short-form video")
+    preset_id = body.get("preset_id", "snappy-creator")
+    duration_sec = float(body.get("duration_sec", 0))
+
+    job_id = str(uuid.uuid4())
+    logger.info(f"Job {job_id} created from presigned upload: key={file_key}")
+
+    return _persist_and_enqueue(db, job_id, file_key, original_filename, prompt, preset_id, duration_sec)
+
+
+def _persist_and_enqueue(
+    db: Session,
+    job_id: str,
+    file_key: str,
+    original_filename: str,
+    prompt: str,
+    preset_id: str,
+    duration_sec: float,
+) -> JobCreateResponse:
+    """Create the Job row in the DB and enqueue or thread the worker."""
     job = Job(
         id=job_id,
         status="queued",
@@ -166,19 +222,17 @@ async def create_job(
         prompt=prompt,
         preset_id=preset_id,
         original_file_path=file_key,
-        original_filename=file.filename,
-        duration_sec=duration,
+        original_filename=original_filename,
+        duration_sec=duration_sec,
     )
     db.add(job)
     db.commit()
 
-    # Enqueue job
     queue = get_queue()
     if queue:
         queue.enqueue(process_job, job_id, job_timeout=600)
         logger.info(f"Job {job_id} enqueued to Redis")
     else:
-        # Process in a safe background thread (sync fallback for MVP without Redis)
         _run_in_thread(process_job, (job_id,), job_id)
 
     return JobCreateResponse(job_id=job_id)

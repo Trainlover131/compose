@@ -2,12 +2,13 @@
 
 import json
 import logging
+import subprocess
 import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-from apps.api.config import LOCAL_STORAGE_PATH
+from apps.api.config import LOCAL_STORAGE_PATH, MAX_INPUT_DURATION_SEC
 from apps.api.models.database import Job, Revision, SessionLocal
 from apps.api.models.schemas import EditPlan
 from apps.api.services.patcher import apply_edit
@@ -44,6 +45,21 @@ def _set_progress(db, job: Job, step: str):
     db.commit()
 
 
+def _probe_duration(path: str) -> float:
+    """Get video duration in seconds via ffprobe. Returns 0.0 on failure."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", path],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            info = json.loads(result.stdout)
+            return float(info.get("format", {}).get("duration", 0))
+    except Exception as e:
+        logger.warning(f"ffprobe duration check failed: {e}")
+    return 0.0
+
+
 def _fail_job(db, job_id: str, error_msg: str, error_trace: str = ""):
     """Mark a job as error with a user-safe message. Always commits."""
     try:
@@ -78,10 +94,22 @@ def process_job(job_id: str):
         job.status = "processing"
         _set_progress(db, job, "transcribing")
 
-        # Get the source video path
+        # Get the source video path (downloads from R2 if needed)
         source_path = storage.get_path(job.original_file_path)
         if not Path(source_path).exists():
             raise FileNotFoundError(f"Source video not found: {source_path}")
+
+        # Detect duration if not set (presigned-upload jobs skip server-side probing)
+        if not job.duration_sec or job.duration_sec <= 0:
+            detected = _probe_duration(source_path)
+            if detected > 0:
+                if detected > MAX_INPUT_DURATION_SEC:
+                    raise ValueError(
+                        f"Video too long: {detected:.0f}s (max {MAX_INPUT_DURATION_SEC}s)"
+                    )
+                job.duration_sec = detected
+                db.commit()
+                logger.info(f"[{job_id}] Detected duration: {detected:.1f}s")
 
         # Step 1: Transcribe + analyze
         stage_start = time.monotonic()

@@ -40,6 +40,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null)
   const [selectedRevision, setSelectedRevision] = useState<RevisionSummary | null>(null)
   const [editLoading, setEditLoading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null)
 
   const { job, pollError, timedOut } = useJobPoller(jobId)
 
@@ -67,16 +68,23 @@ export default function Home() {
     setIsSubmitting(true)
     setError(null)
     setSelectedRevision(null)
+    setUploadProgress(null)
 
     try {
       const result = await createJob(
         file,
         prompt || 'Make this into an engaging short-form video',
-        presetId
+        presetId,
+        {
+          durationSec: duration ?? undefined,
+          onProgress: (pct) => setUploadProgress(pct),
+        },
       )
+      setUploadProgress(null)
       setJobId(result.job_id)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Upload failed')
+      setUploadProgress(null)
     } finally {
       setIsSubmitting(false)
     }
@@ -167,7 +175,11 @@ export default function Home() {
                   {isSubmitting || isJobActive ? (
                     <>
                       <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      {isSubmitting ? 'Uploading...' : 'Processing...'}
+                      {isSubmitting
+                        ? uploadProgress !== null
+                          ? `Uploading to storage\u2026 ${uploadProgress}%`
+                          : 'Creating job\u2026'
+                        : 'Processing\u2026'}
                     </>
                   ) : (
                     'Generate'

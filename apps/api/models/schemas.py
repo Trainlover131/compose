@@ -272,3 +272,15 @@ class PresetResponse(BaseModel):
     name: str
     description: str
     config: dict
+
+
+# === Presigned Upload Schemas ===
+
+class PresignRequest(BaseModel):
+    filename: str
+    content_type: str
+
+
+class PresignResponse(BaseModel):
+    file_key: str
+    upload_url: str
