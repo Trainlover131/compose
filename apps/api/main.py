@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,13 +12,14 @@ from fastapi.responses import FileResponse, JSONResponse
 from apps.api.config import ALLOWED_ORIGINS, LOCAL_STORAGE_PATH
 from apps.api.routes.jobs import router as jobs_router
 from apps.api.routes.presets import router as presets_router
+from apps.api.routes.uploads import router as uploads_router
 
 # Structured logging
 logging.basicConfig(
     level=logging.INFO,
     format='{"time":"%(asctime)s","level":"%(levelname)s","module":"%(module)s","message":"%(message)s"}',
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 
 @asynccontextmanager
@@ -50,9 +52,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.monotonic()
+    response = await call_next(request)
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    logger.info(f"{request.method} {request.url.path} {response.status_code} ({elapsed_ms}ms)")
+    return response
+
+
 # Routes
 app.include_router(jobs_router)
 app.include_router(presets_router)
+app.include_router(uploads_router)
 
 
 @app.get("/")

@@ -63,6 +63,7 @@ class R2Storage:
             endpoint_url=R2_ENDPOINT_URL,
             aws_access_key_id=R2_ACCESS_KEY_ID,
             aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+            region_name="auto",
         )
         self.bucket = R2_BUCKET_NAME
 
@@ -82,11 +83,16 @@ class R2Storage:
         )
 
     def get_path(self, key: str) -> str:
-        # For R2, download to local temp and return path
+        """Download from R2 to a local temp path and return it.
+
+        Cached: if the file already exists locally it is not re-downloaded.
+        """
         local = Path(f"/tmp/r2_cache/{key}")
         local.parent.mkdir(parents=True, exist_ok=True)
         if not local.exists():
+            logger.info(f"Downloading from R2: {key} -> {local}")
             self.client.download_file(self.bucket, key, str(local))
+            logger.info(f"Download complete: {key} ({local.stat().st_size} bytes)")
         return str(local)
 
     def exists(self, key: str) -> bool:

@@ -248,6 +248,7 @@ class JobResponse(BaseModel):
     edit_plan: Optional[dict] = None
     revisions: list[RevisionSummary] = []
     created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class EditRequest(BaseModel):
@@ -271,3 +272,15 @@ class PresetResponse(BaseModel):
     name: str
     description: str
     config: dict
+
+
+# === Presigned Upload Schemas ===
+
+class PresignRequest(BaseModel):
+    filename: str
+    content_type: str
+
+
+class PresignResponse(BaseModel):
+    file_key: str
+    upload_url: str

@@ -2,11 +2,13 @@
 
 import json
 import logging
+import subprocess
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-from apps.api.config import LOCAL_STORAGE_PATH
+from apps.api.config import LOCAL_STORAGE_PATH, MAX_INPUT_DURATION_SEC
 from apps.api.models.database import Job, Revision, SessionLocal
 from apps.api.models.schemas import EditPlan
 from apps.api.services.patcher import apply_edit
@@ -23,38 +25,108 @@ logging.basicConfig(
 )
 
 
+def _log_stage(job_id: str, stage: str, event: str, elapsed_ms: int = 0, error: str = ""):
+    """Emit structured JSON log for pipeline stage transitions."""
+    entry = {
+        "job_id": job_id,
+        "stage": stage,
+        "event": event,
+        "elapsed_ms": elapsed_ms,
+    }
+    if error:
+        entry["error"] = error[:500]
+    logger.info(json.dumps(entry))
+
+
+def _set_progress(db, job: Job, step: str):
+    """Set progress_step and commit immediately so the poller sees it."""
+    job.progress_step = step
+    job.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+
+def _probe_duration(path: str) -> float:
+    """Get video duration in seconds via ffprobe. Returns 0.0 on failure."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", path],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            info = json.loads(result.stdout)
+            return float(info.get("format", {}).get("duration", 0))
+    except Exception as e:
+        logger.warning(f"ffprobe duration check failed: {e}")
+    return 0.0
+
+
+def _fail_job(db, job_id: str, error_msg: str, error_trace: str = ""):
+    """Mark a job as error with a user-safe message. Always commits."""
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job and job.status not in ("done", "error"):
+            job.status = "error"
+            job.progress_step = "error"
+            job.error = error_msg[:1000]
+            job.error_trace = error_trace[:5000]
+            job.updated_at = datetime.now(timezone.utc)
+            db.commit()
+    except Exception as inner:
+        logger.error(f"[{job_id}] Failed to mark job as error: {inner}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
 def process_job(job_id: str):
-    """Main job processing pipeline: transcribe → plan → fetch assets → render."""
+    """Main job processing pipeline: transcribe -> plan -> fetch assets -> render."""
     db = SessionLocal()
+    pipeline_start = time.monotonic()
     try:
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
             logger.error(f"Job not found: {job_id}")
             return
 
-        job.status = "processing"
-        job.progress_step = "transcribing"
-        job.updated_at = datetime.now(timezone.utc)
-        db.commit()
+        _log_stage(job_id, "pipeline", "start")
 
-        # Get the source video path
+        job.status = "processing"
+        _set_progress(db, job, "transcribing")
+
+        # Get the source video path (downloads from R2 if needed)
         source_path = storage.get_path(job.original_file_path)
         if not Path(source_path).exists():
             raise FileNotFoundError(f"Source video not found: {source_path}")
 
+        # Detect duration if not set (presigned-upload jobs skip server-side probing)
+        if not job.duration_sec or job.duration_sec <= 0:
+            detected = _probe_duration(source_path)
+            if detected > 0:
+                if detected > MAX_INPUT_DURATION_SEC:
+                    raise ValueError(
+                        f"Video too long: {detected:.0f}s (max {MAX_INPUT_DURATION_SEC}s)"
+                    )
+                job.duration_sec = detected
+                db.commit()
+                logger.info(f"[{job_id}] Detected duration: {detected:.1f}s")
+
         # Step 1: Transcribe + analyze
-        logger.info(f"[{job_id}] Transcribing...")
+        stage_start = time.monotonic()
+        _log_stage(job_id, "transcribe", "start")
         result = analyze_video(source_path)
         transcript = result["transcript"]
         analysis = result["analysis"]
+        elapsed = int((time.monotonic() - stage_start) * 1000)
+        _log_stage(job_id, "transcribe", "done", elapsed_ms=elapsed)
 
         job.transcript_json = transcript
         job.analysis_json = analysis
-        job.progress_step = "planning"
-        db.commit()
+        _set_progress(db, job, "planning")
 
         # Step 2: Generate edit plan
-        logger.info(f"[{job_id}] Planning edit...")
+        stage_start = time.monotonic()
+        _log_stage(job_id, "plan", "start")
         edit_plan = plan_edit(
             transcript=transcript,
             analysis=analysis,
@@ -62,14 +134,16 @@ def process_job(job_id: str):
             preset_id=job.preset_id,
             video_duration=job.duration_sec,
         )
+        elapsed = int((time.monotonic() - stage_start) * 1000)
+        _log_stage(job_id, "plan", "done", elapsed_ms=elapsed)
 
         job.edit_plan_json = edit_plan.model_dump()
-        job.progress_step = "fetching_broll"
-        db.commit()
+        _set_progress(db, job, "fetching_broll")
 
         # Step 3: Fetch b-roll assets
         if edit_plan.broll.enabled and edit_plan.broll.inserts:
-            logger.info(f"[{job_id}] Fetching b-roll...")
+            stage_start = time.monotonic()
+            _log_stage(job_id, "broll", "start")
             inserts_data = [i.model_dump() for i in edit_plan.broll.inserts]
             updated_inserts = fetch_broll_for_plan(inserts_data)
             # Update plan with asset paths
@@ -78,12 +152,16 @@ def process_job(job_id: str):
             edit_plan = EditPlan.model_validate(plan_data)
             job.edit_plan_json = edit_plan.model_dump()
             db.commit()
+            elapsed = int((time.monotonic() - stage_start) * 1000)
+            _log_stage(job_id, "broll", "done", elapsed_ms=elapsed)
+        else:
+            _log_stage(job_id, "broll", "skipped")
 
         # Step 4: Render
-        job.progress_step = "rendering"
-        db.commit()
+        _set_progress(db, job, "rendering")
 
-        logger.info(f"[{job_id}] Rendering...")
+        stage_start = time.monotonic()
+        _log_stage(job_id, "render", "start")
         output_key = f"outputs/{job_id}/v1.mp4"
         output_path = storage.get_path(output_key)
 
@@ -93,6 +171,8 @@ def process_job(job_id: str):
             transcript=transcript,
             output_path=output_path,
         )
+        elapsed = int((time.monotonic() - stage_start) * 1000)
+        _log_stage(job_id, "render", "done", elapsed_ms=elapsed)
 
         # Store output
         output_url = storage.get_url(output_key)
@@ -104,35 +184,40 @@ def process_job(job_id: str):
         job.updated_at = datetime.now(timezone.utc)
         db.commit()
 
-        logger.info(f"[{job_id}] Job complete: {output_url}")
+        total_elapsed = int((time.monotonic() - pipeline_start) * 1000)
+        _log_stage(job_id, "pipeline", "done", elapsed_ms=total_elapsed)
 
     except Exception as e:
+        total_elapsed = int((time.monotonic() - pipeline_start) * 1000)
+        error_msg = str(e)[:1000]
+        tb = traceback.format_exc()
+        _log_stage(job_id, "pipeline", "error", elapsed_ms=total_elapsed, error=error_msg)
         logger.error(f"[{job_id}] Job failed: {e}")
-        logger.error(traceback.format_exc())
+        logger.error(tb)
+
+        # Rollback any pending transaction before writing error state
         try:
-            job = db.query(Job).filter(Job.id == job_id).first()
-            if job:
-                job.status = "error"
-                job.progress_step = "error"
-                job.error = str(e)
-                job.error_trace = traceback.format_exc()
-                job.updated_at = datetime.now(timezone.utc)
-                db.commit()
+            db.rollback()
         except Exception:
             pass
+
+        _fail_job(db, job_id, f"Processing failed: {error_msg}", tb)
     finally:
         db.close()
 
 
 def process_revision(job_id: str, revision_id: str):
-    """Process a revision: generate patch → apply → re-render."""
+    """Process a revision: generate patch -> apply -> re-render."""
     db = SessionLocal()
+    rev_start = time.monotonic()
     try:
         job = db.query(Job).filter(Job.id == job_id).first()
         revision = db.query(Revision).filter(Revision.id == revision_id).first()
         if not job or not revision:
             logger.error(f"Job or revision not found: {job_id}/{revision_id}")
             return
+
+        _log_stage(job_id, f"revision-{revision.revision_number}", "start")
 
         revision.status = "processing"
         db.commit()
@@ -195,16 +280,26 @@ def process_revision(job_id: str, revision_id: str):
         revision.output_url = output_url
         db.commit()
 
-        logger.info(f"[{job_id}/r{revision.revision_number}] Revision complete")
+        elapsed = int((time.monotonic() - rev_start) * 1000)
+        _log_stage(job_id, f"revision-{revision.revision_number}", "done", elapsed_ms=elapsed)
 
     except Exception as e:
+        elapsed = int((time.monotonic() - rev_start) * 1000)
+        error_msg = str(e)[:1000]
+        _log_stage(job_id, f"revision-{revision_id}", "error", elapsed_ms=elapsed, error=error_msg)
         logger.error(f"[{job_id}/{revision_id}] Revision failed: {e}")
         logger.error(traceback.format_exc())
+
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
         try:
             revision = db.query(Revision).filter(Revision.id == revision_id).first()
             if revision:
                 revision.status = "error"
-                revision.error = str(e)
+                revision.error = f"Revision failed: {error_msg}"
                 db.commit()
         except Exception:
             pass
