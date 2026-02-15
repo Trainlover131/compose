@@ -1,10 +1,12 @@
 FROM python:3.12-slim
 
-# Install FFmpeg and system dependencies for rendering + ASS subtitles
+# Install FFmpeg + ASS deps + faster-whisper native runtime deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libass-dev \
     curl \
+    libgomp1 \
+    libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -12,6 +14,9 @@ WORKDIR /app
 # Install Python dependencies first (layer caching)
 COPY apps/api/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Fail fast during build if faster-whisper can't import (prevents silent fallback at runtime)
+RUN python -c "from faster_whisper import WhisperModel; print('faster-whisper import OK')"
 
 # Copy application code + assets
 COPY apps/ /app/apps/
