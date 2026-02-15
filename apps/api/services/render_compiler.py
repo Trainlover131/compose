@@ -207,7 +207,7 @@ def compile_render(
                 "ffmpeg", "-y",
                 "-ss", str(cut.start), "-t", str(duration),
                 "-i", source_video,
-                "-vf", f"scale={int(1080 * scale)}:{int(1920 * scale)}:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
+                "-vf", f"scale={int(1080 * scale)}:{int(1920 * scale)},crop=1080:1920",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-threads", "2",
                 "-c:a", "aac", "-b:a", "160k",
