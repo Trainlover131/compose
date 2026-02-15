@@ -250,22 +250,36 @@ async def get_job(job_id: str, db: Session = Depends(get_db)):
 
     revisions = []
     for rev in job.revisions:
+        rev_url = None
+        if rev.output_file_path:
+            try:
+                rev_url = storage.get_url(rev.output_file_path)
+            except Exception as e:
+                logger.warning(f"Failed to generate revision URL for {rev.id}: {e}")
+
         revisions.append(
             RevisionSummary(
                 revision_id=rev.id,
                 revision_number=rev.revision_number,
                 status=rev.status,
-                output_url=rev.output_url or None,
+                output_url=rev_url,
                 instruction=rev.instruction,
             )
         )
+
+    output_url = None
+    if job.output_file_path:
+        try:
+            output_url = storage.get_url(job.output_file_path)
+        except Exception as e:
+            logger.warning(f"Failed to generate output URL for job {job.id}: {e}")
 
     return JobResponse(
         job_id=job.id,
         status=job.status,
         progress_step=job.progress_step,
         error=job.error or None,
-        output_url=job.output_url or None,
+        output_url=output_url,
         edit_plan=job.edit_plan_json if job.edit_plan_json else None,
         revisions=revisions,
         created_at=job.created_at.isoformat() if job.created_at else None,
@@ -325,11 +339,18 @@ async def get_revision(
     if not revision:
         raise HTTPException(404, "Revision not found")
 
+    output_url = None
+    if revision.output_file_path:
+        try:
+            output_url = storage.get_url(revision.output_file_path)
+        except Exception as e:
+            logger.warning(f"Failed to generate revision URL for {revision.id}: {e}")
+
     return RevisionResponse(
         revision_id=revision.id,
         revision_number=revision.revision_number,
         status=revision.status,
-        output_url=revision.output_url or None,
+        output_url=output_url,
     )
 
 
