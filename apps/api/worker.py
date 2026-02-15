@@ -162,15 +162,20 @@ def process_job(job_id: str):
 
         stage_start = time.monotonic()
         _log_stage(job_id, "render", "start")
+
         output_key = f"outputs/{job_id}/v1.mp4"
-        output_path = storage.get_path(output_key)
+        local_output_path = str(Path("/tmp") / "compose_outputs" / job_id / "v1.mp4")
+        Path(local_output_path).parent.mkdir(parents=True, exist_ok=True)
 
         compile_render(
             edit_plan=edit_plan,
             source_video=source_path,
             transcript=transcript,
-            output_path=output_path,
+            output_path=local_output_path,
         )
+
+        storage.save_file(local_output_path, output_key)
+
         elapsed = int((time.monotonic() - stage_start) * 1000)
         _log_stage(job_id, "render", "done", elapsed_ms=elapsed)
 
@@ -264,14 +269,19 @@ def process_revision(job_id: str, revision_id: str):
 
         # Re-render
         output_key = f"outputs/{job_id}/v{revision.revision_number + 1}.mp4"
-        output_path = storage.get_path(output_key)
+        local_output_path = str(
+            Path("/tmp") / "compose_outputs" / job_id / f"v{revision.revision_number + 1}.mp4"
+        )
+        Path(local_output_path).parent.mkdir(parents=True, exist_ok=True)
 
         compile_render(
             edit_plan=new_plan,
             source_video=source_path,
             transcript=job.transcript_json,
-            output_path=output_path,
+            output_path=local_output_path,
         )
+
+        storage.save_file(local_output_path, output_key)
 
         output_url = storage.get_url(output_key)
 
