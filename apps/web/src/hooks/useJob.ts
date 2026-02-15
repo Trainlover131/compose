@@ -3,43 +3,72 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getJob, getRevision, type JobResponse, type RevisionSummary } from '@/lib/api'
 
+// Stop polling after 10 minutes to prevent infinite loops
+const POLL_TIMEOUT_MS = 10 * 60 * 1000
+const POLL_INTERVAL_MS = 2000
+
 export function useJobPoller(jobId: string | null) {
   const [job, setJob] = useState<JobResponse | null>(null)
   const [loading, setLoading] = useState(false)
+  const [pollError, setPollError] = useState<string | null>(null)
+  const [timedOut, setTimedOut] = useState(false)
   const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const startTimeRef = useRef<number | null>(null)
+
+  const stopPolling = useCallback(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current)
+      intervalRef.current = null
+    }
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current)
+      timeoutRef.current = null
+    }
+  }, [])
 
   const poll = useCallback(async () => {
     if (!jobId) return
     try {
       const data = await getJob(jobId)
       setJob(data)
+      setPollError(null)
       if (data.status === 'done' || data.status === 'error') {
-        if (intervalRef.current) {
-          clearInterval(intervalRef.current)
-          intervalRef.current = null
-        }
+        stopPolling()
       }
     } catch (e) {
-      console.error('Poll error:', e)
+      const msg = e instanceof Error ? e.message : 'Failed to fetch job status'
+      setPollError(msg)
+      console.error('Poll error:', msg)
     }
-  }, [jobId])
+  }, [jobId, stopPolling])
 
   useEffect(() => {
     if (!jobId) return
 
+    // Reset state for new job
+    setJob(null)
+    setPollError(null)
+    setTimedOut(false)
+    startTimeRef.current = Date.now()
+
     setLoading(true)
     poll().finally(() => setLoading(false))
 
-    intervalRef.current = setInterval(poll, 2000)
+    intervalRef.current = setInterval(poll, POLL_INTERVAL_MS)
+
+    // Client-side timeout: stop polling after 10 minutes
+    timeoutRef.current = setTimeout(() => {
+      stopPolling()
+      setTimedOut(true)
+    }, POLL_TIMEOUT_MS)
 
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
-      }
+      stopPolling()
     }
-  }, [jobId, poll])
+  }, [jobId, poll, stopPolling])
 
-  return { job, loading }
+  return { job, loading, pollError, timedOut }
 }
 
 export function useRevisionPoller(
@@ -54,19 +83,28 @@ export function useRevisionPoller(
     output_url: string | null
   } | null>(null)
   const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     if (!jobId || !revisionId) return
+
+    const stopPolling = () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+        timeoutRef.current = null
+      }
+    }
 
     const poll = async () => {
       try {
         const data = await getRevision(jobId, revisionId)
         setRevision(data)
         if (data.status === 'done' || data.status === 'error') {
-          if (intervalRef.current) {
-            clearInterval(intervalRef.current)
-            intervalRef.current = null
-          }
+          stopPolling()
           onComplete?.()
         }
       } catch (e) {
@@ -75,12 +113,15 @@ export function useRevisionPoller(
     }
 
     poll()
-    intervalRef.current = setInterval(poll, 2000)
+    intervalRef.current = setInterval(poll, POLL_INTERVAL_MS)
+
+    // Client-side timeout for revisions too
+    timeoutRef.current = setTimeout(() => {
+      stopPolling()
+    }, POLL_TIMEOUT_MS)
 
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
-      }
+      stopPolling()
     }
   }, [jobId, revisionId, onComplete])
 

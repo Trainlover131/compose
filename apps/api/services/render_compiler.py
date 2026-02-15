@@ -1,4 +1,4 @@
-"""Render compiler: converts EditPlan → deterministic FFmpeg commands."""
+"""Render compiler: converts EditPlan -> deterministic FFmpeg commands."""
 
 import json
 import logging
@@ -11,6 +11,26 @@ from apps.api.config import MUSIC_DIR, MAX_RENDER_TIMEOUT_SEC
 from apps.api.models.schemas import EditPlan
 
 logger = logging.getLogger(__name__)
+
+# Maximum chars of FFmpeg stderr to include in error messages
+_MAX_STDERR_CHARS = 2000
+
+
+def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subprocess.CompletedProcess:
+    """Run an FFmpeg command with proper error capture.
+
+    Raises RuntimeError with the last ~2k chars of stderr on failure.
+    """
+    logger.info(f"FFmpeg [{step_name}]: {' '.join(cmd[:6])}...")
+    result = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    if result.returncode != 0:
+        stderr_text = result.stderr.decode("utf-8", errors="replace")
+        stderr_tail = stderr_text[-_MAX_STDERR_CHARS:] if len(stderr_text) > _MAX_STDERR_CHARS else stderr_text
+        logger.error(f"FFmpeg [{step_name}] failed (rc={result.returncode}):\n{stderr_tail}")
+        raise RuntimeError(
+            f"FFmpeg {step_name} failed: {stderr_tail.strip()[-500:]}"
+        )
+    return result
 
 
 def generate_ass_subtitles(
@@ -169,6 +189,7 @@ def compile_render(
     # Step 1: Cut and concatenate main segments
     segments_list_path = work / "segments.txt"
     segment_paths = []
+    failed_segments = []
 
     for i, cut in enumerate(edit_plan.main_cuts):
         seg_path = work / f"seg_{i:03d}.mp4"
@@ -182,22 +203,7 @@ def compile_render(
                 break
 
         if punch_in:
-            # Build complex filter for punch-in zoom
-            pi_start_in_seg = punch_in.start - cut.start
-            pi_end_in_seg = punch_in.end - cut.start
-            pi_duration = pi_end_in_seg - pi_start_in_seg
             scale = punch_in.scale
-
-            # Zoom filter: scale up then crop to original size
-            vf = (
-                f"scale=1080:1920,"
-                f"zoompan=z=if(between(in_time\\,{pi_start_in_seg:.3f}\\,{pi_end_in_seg:.3f})\\,{scale}\\,1)"
-                f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-                f":d=1:s=1080x1920:fps=30"
-            )
-            # Simpler approach: just scale up and crop for the whole segment
-            # and use segment splitting for zoomed vs non-zoomed parts
-            # For MVP, apply a uniform approach
             cmd = [
                 "ffmpeg", "-y",
                 "-ss", str(cut.start), "-t", str(duration),
@@ -220,16 +226,25 @@ def compile_render(
             ]
 
         logger.info(f"Cutting segment {i}: {cut.start:.2f}-{cut.end:.2f}")
-        result = subprocess.run(cmd, capture_output=True, timeout=120)
-        if result.returncode != 0:
-            logger.error(f"Segment cut failed: {result.stderr.decode()[:300]}")
-            continue
-
-        if seg_path.exists() and seg_path.stat().st_size > 0:
-            segment_paths.append(seg_path)
+        try:
+            _run_ffmpeg(cmd, f"segment-{i}", timeout=120)
+            if seg_path.exists() and seg_path.stat().st_size > 0:
+                segment_paths.append(seg_path)
+            else:
+                failed_segments.append(i)
+                logger.warning(f"Segment {i} produced empty output")
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            failed_segments.append(i)
+            logger.warning(f"Segment {i} cut failed (non-fatal, skipping): {e}")
 
     if not segment_paths:
-        raise RuntimeError("No segments were created successfully")
+        raise RuntimeError(
+            f"No segments created successfully ({len(failed_segments)} failed). "
+            f"The source video may be corrupted or in an unsupported format."
+        )
+
+    if failed_segments:
+        logger.warning(f"{len(failed_segments)} of {len(edit_plan.main_cuts)} segments failed: {failed_segments}")
 
     # Step 2: Handle b-roll inserts
     broll_segments = {}
@@ -242,35 +257,37 @@ def compile_render(
                     "end": bi.end,
                 }
 
-    # Step 3: Build concat list (interleaving b-roll if present)
-    # For MVP: concat all speech segments, then overlay b-roll
-    # Simpler approach: just concat speech segments first
+    # Step 3: Build concat list
     with open(segments_list_path, "w") as f:
         for sp in segment_paths:
             f.write(f"file '{sp}'\n")
 
     concat_path = work / "concat.mp4"
-    cmd = [
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", str(segments_list_path),
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-        "-c:a", "aac", "-b:a", "128k",
-        str(concat_path),
-    ]
-    logger.info("Concatenating segments")
-    result = subprocess.run(cmd, capture_output=True, timeout=180)
-    if result.returncode != 0:
-        logger.error(f"Concat failed: {result.stderr.decode()[:300]}")
+    try:
+        _run_ffmpeg(
+            [
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", str(segments_list_path),
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+                "-c:a", "aac", "-b:a", "128k",
+                str(concat_path),
+            ],
+            "concat",
+            timeout=180,
+        )
+    except RuntimeError:
         # Try copy codec as fallback
-        cmd = [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-            "-i", str(segments_list_path),
-            "-c", "copy",
-            str(concat_path),
-        ]
-        result = subprocess.run(cmd, capture_output=True, timeout=180)
-        if result.returncode != 0:
-            raise RuntimeError(f"Concatenation failed: {result.stderr.decode()[:300]}")
+        logger.info("Concat re-encode failed, trying stream copy fallback")
+        _run_ffmpeg(
+            [
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", str(segments_list_path),
+                "-c", "copy",
+                str(concat_path),
+            ],
+            "concat-copy",
+            timeout=180,
+        )
 
     # Step 4: Generate and burn captions
     current_video = str(concat_path)
@@ -281,20 +298,22 @@ def compile_render(
 
         if Path(ass_path).exists() and Path(ass_path).stat().st_size > 100:
             captioned_path = work / "captioned.mp4"
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", current_video,
-                "-vf", f"ass={ass_path}",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-                "-c:a", "copy",
-                str(captioned_path),
-            ]
-            logger.info("Burning captions")
-            result = subprocess.run(cmd, capture_output=True, timeout=180)
-            if result.returncode == 0:
+            try:
+                _run_ffmpeg(
+                    [
+                        "ffmpeg", "-y",
+                        "-i", current_video,
+                        "-vf", f"ass={ass_path}",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+                        "-c:a", "copy",
+                        str(captioned_path),
+                    ],
+                    "burn-captions",
+                    timeout=180,
+                )
                 current_video = str(captioned_path)
-            else:
-                logger.warning(f"Caption burn failed: {result.stderr.decode()[:200]}")
+            except RuntimeError as e:
+                logger.warning(f"Caption burn failed (non-fatal, continuing without captions): {e}")
 
     # Step 5: Mix in music
     if edit_plan.music.enabled:
@@ -317,47 +336,47 @@ def compile_render(
                 except Exception:
                     pass
 
-            # Mix music at target volume under the voice
-            # volume=0dB means original level; we want music quieter
             vol_linear = 10 ** (vol_db / 20.0)
 
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", current_video,
-                "-stream_loop", "-1", "-i", music_path,
-                "-t", str(video_duration),
-                "-filter_complex",
-                f"[1:a]volume={vol_linear:.4f},atrim=0:{video_duration:.2f}[music];"
-                f"[0:a][music]amix=inputs=2:duration=shortest:dropout_transition=2[aout]",
-                "-map", "0:v", "-map", "[aout]",
-                "-c:v", "copy",
-                "-c:a", "aac", "-b:a", "128k",
-                str(music_out),
-            ]
-            logger.info(f"Mixing music: {edit_plan.music.track_id} at {vol_db}dB")
-            result = subprocess.run(cmd, capture_output=True, timeout=180)
-            if result.returncode == 0:
+            try:
+                _run_ffmpeg(
+                    [
+                        "ffmpeg", "-y",
+                        "-i", current_video,
+                        "-stream_loop", "-1", "-i", music_path,
+                        "-t", str(video_duration),
+                        "-filter_complex",
+                        f"[1:a]volume={vol_linear:.4f},atrim=0:{video_duration:.2f}[music];"
+                        f"[0:a][music]amix=inputs=2:duration=shortest:dropout_transition=2[aout]",
+                        "-map", "0:v", "-map", "[aout]",
+                        "-c:v", "copy",
+                        "-c:a", "aac", "-b:a", "128k",
+                        str(music_out),
+                    ],
+                    "mix-music",
+                    timeout=180,
+                )
                 current_video = str(music_out)
-            else:
-                logger.warning(f"Music mix failed: {result.stderr.decode()[:200]}")
+            except RuntimeError as e:
+                logger.warning(f"Music mix failed (non-fatal, continuing without music): {e}")
 
     # Step 6: Final output encode
     output_dir = Path(output_path).parent
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", current_video,
-        "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-        "-c:a", "aac", "-b:a", "128k",
-        "-movflags", "+faststart",
-        str(output_path),
-    ]
-    logger.info(f"Final encode -> {output_path}")
-    result = subprocess.run(cmd, capture_output=True, timeout=MAX_RENDER_TIMEOUT_SEC)
-    if result.returncode != 0:
-        raise RuntimeError(f"Final encode failed: {result.stderr.decode()[:300]}")
+    _run_ffmpeg(
+        [
+            "ffmpeg", "-y",
+            "-i", current_video,
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-c:a", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            str(output_path),
+        ],
+        "final-encode",
+        timeout=MAX_RENDER_TIMEOUT_SEC,
+    )
 
     logger.info(f"Render complete: {output_path}")
     return output_path

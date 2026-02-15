@@ -248,6 +248,7 @@ class JobResponse(BaseModel):
     edit_plan: Optional[dict] = None
     revisions: list[RevisionSummary] = []
     created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class EditRequest(BaseModel):

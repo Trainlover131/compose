@@ -41,7 +41,7 @@ export default function Home() {
   const [selectedRevision, setSelectedRevision] = useState<RevisionSummary | null>(null)
   const [editLoading, setEditLoading] = useState(false)
 
-  const { job } = useJobPoller(jobId)
+  const { job, pollError, timedOut } = useJobPoller(jobId)
 
   // Load presets
   useEffect(() => {
@@ -102,6 +102,12 @@ export default function Home() {
   const isJobActive =
     job?.status === 'queued' || job?.status === 'processing'
   const isJobDone = job?.status === 'done'
+  const isJobError = job?.status === 'error'
+
+  // Compute the visible error message (prioritize: timeout > job error > poll error > local error)
+  const displayError = timedOut
+    ? 'Timed out waiting for server response. Check server logs or try again.'
+    : job?.error || pollError || error || null
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -169,18 +175,20 @@ export default function Home() {
                 </button>
 
                 {/* Progress stepper */}
-                {(isJobActive || isJobDone) && job && (
+                {(isJobActive || isJobDone || isJobError) && job && (
                   <Stepper
                     currentStep={job.progress_step}
                     status={job.status}
                   />
                 )}
 
-                {/* Error */}
-                {(error || job?.error) && (
-                  <p className="text-xs text-red-400 text-center max-w-sm">
-                    {error || job?.error}
-                  </p>
+                {/* Error display */}
+                {displayError && (
+                  <div className="w-full max-w-sm rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3">
+                    <p className="text-xs text-red-400 text-center break-words">
+                      {displayError}
+                    </p>
+                  </div>
                 )}
               </div>
 
@@ -226,6 +234,17 @@ export default function Home() {
                 <div className="flex flex-col items-center justify-center py-12 gap-3">
                   <div className="w-10 h-10 border-2 border-accent/30 border-t-accent rounded-full animate-spin" />
                   <p className="text-xs text-white/40">Processing video...</p>
+                </div>
+              ) : isJobError ? (
+                <div className="flex flex-col items-center justify-center py-12 gap-3">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-red-400">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="15" y1="9" x2="9" y2="15" />
+                    <line x1="9" y1="9" x2="15" y2="15" />
+                  </svg>
+                  <p className="text-xs text-red-400 text-center px-4">
+                    {job?.error || 'Processing failed'}
+                  </p>
                 </div>
               ) : (
                 <div className="flex flex-col items-center justify-center py-12 gap-3">

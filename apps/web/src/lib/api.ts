@@ -1,4 +1,4 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/+$/, '')
 
 export interface JobResponse {
   job_id: string
@@ -9,6 +9,7 @@ export interface JobResponse {
   edit_plan: Record<string, unknown> | null
   revisions: RevisionSummary[]
   created_at: string | null
+  updated_at: string | null
 }
 
 export interface RevisionSummary {
@@ -26,6 +27,26 @@ export interface Preset {
   config: Record<string, unknown>
 }
 
+async function handleResponse<T>(res: Response, operation: string): Promise<T> {
+  if (!res.ok) {
+    let detail = `${operation} failed (HTTP ${res.status})`
+    try {
+      const body = await res.json()
+      if (body.detail) detail = body.detail
+      else if (body.error) detail = body.error
+    } catch {
+      try {
+        const text = await res.text()
+        if (text) detail = `${operation} failed (HTTP ${res.status}): ${text.slice(0, 200)}`
+      } catch {
+        // use default
+      }
+    }
+    throw new Error(detail)
+  }
+  return res.json()
+}
+
 export async function createJob(
   file: File,
   prompt: string,
@@ -41,18 +62,12 @@ export async function createJob(
     body: formData,
   })
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Upload failed' }))
-    throw new Error(err.detail || 'Upload failed')
-  }
-
-  return res.json()
+  return handleResponse(res, 'Upload')
 }
 
 export async function getJob(jobId: string): Promise<JobResponse> {
   const res = await fetch(`${API_URL}/api/jobs/${jobId}`)
-  if (!res.ok) throw new Error('Failed to fetch job')
-  return res.json()
+  return handleResponse(res, 'Fetch job')
 }
 
 export async function createEdit(
@@ -64,8 +79,7 @@ export async function createEdit(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ instruction }),
   })
-  if (!res.ok) throw new Error('Failed to create edit')
-  return res.json()
+  return handleResponse(res, 'Create edit')
 }
 
 export async function getRevision(
@@ -78,17 +92,18 @@ export async function getRevision(
   output_url: string | null
 }> {
   const res = await fetch(`${API_URL}/api/jobs/${jobId}/edits/${revisionId}`)
-  if (!res.ok) throw new Error('Failed to fetch revision')
-  return res.json()
+  return handleResponse(res, 'Fetch revision')
 }
 
 export async function getPresets(): Promise<Preset[]> {
   const res = await fetch(`${API_URL}/api/presets`)
-  if (!res.ok) throw new Error('Failed to fetch presets')
-  return res.json()
+  return handleResponse(res, 'Fetch presets')
 }
 
 export function getFileUrl(path: string): string {
   if (path.startsWith('http')) return path
-  return `${API_URL}${path}`
+  // Avoid double-prefixing: if path already starts with /api/, just prepend base URL
+  if (path.startsWith('/api/')) return `${API_URL}${path}`
+  if (path.startsWith('/')) return `${API_URL}${path}`
+  return `${API_URL}/${path}`
 }
