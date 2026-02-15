@@ -185,6 +185,16 @@ def compile_render(
 
     logger.info(f"Starting render: {len(edit_plan.main_cuts)} cuts, output -> {output_path}")
 
+    # Aspect handling:
+    # - "fit": preserve aspect ratio and pad (no stretch, no crop) ✅ default
+    # - "fill": preserve aspect ratio and crop to fill 9:16 (no stretch, but crops edges)
+    fit_mode = "fit"  # later wire this to UI/preset
+
+    if fit_mode == "fill":
+        vf_base = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
+    else:
+        vf_base = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2"
+
     # Step 1: Cut and concatenate main segments
     segments_list_path = work / "segments.txt"
     segment_paths = []
@@ -203,11 +213,25 @@ def compile_render(
 
         if punch_in:
             scale = punch_in.scale
+
+            if fit_mode == "fill":
+                vf = (
+                    "scale=1080:1920:force_original_aspect_ratio=increase,"
+                    "crop=1080:1920,"
+                    f"zoompan=z={scale}:d=1:s=1080x1920"
+                )
+            else:
+                vf = (
+                    "scale=1080:1920:force_original_aspect_ratio=decrease,"
+                    "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
+                    f"zoompan=z={scale}:d=1:s=1080x1920"
+                )
+
             cmd = [
                 "ffmpeg", "-y",
                 "-ss", str(cut.start), "-t", str(duration),
                 "-i", source_video,
-                "-vf", f"scale={int(1080 * scale)}:{int(1920 * scale)},crop=1080:1920",
+                "-vf", vf,
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-threads", "2",
                 "-c:a", "aac", "-b:a", "160k",
@@ -219,7 +243,7 @@ def compile_render(
                 "ffmpeg", "-y",
                 "-ss", str(cut.start), "-t", str(duration),
                 "-i", source_video,
-                "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
+                "-vf", vf_base,
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-threads", "2",
                 "-c:a", "aac", "-b:a", "160k",
