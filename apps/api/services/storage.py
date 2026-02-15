@@ -79,7 +79,7 @@ class R2Storage:
         return self.client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self.bucket, "Key": key},
-            ExpiresIn=3600,
+            ExpiresIn=2592000,
         )
 
     def get_path(self, key: str) -> str:
