@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -209,8 +208,9 @@ def compile_render(
                 "-ss", str(cut.start), "-t", str(duration),
                 "-i", source_video,
                 "-vf", f"scale={int(1080 * scale)}:{int(1920 * scale)},crop=1080:1920",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-                "-c:a", "aac", "-b:a", "128k",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                "-threads", "2",
+                "-c:a", "aac", "-b:a", "160k",
                 str(seg_path),
             ]
         else:
@@ -220,14 +220,15 @@ def compile_render(
                 "-ss", str(cut.start), "-t", str(duration),
                 "-i", source_video,
                 "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-                "-c:a", "aac", "-b:a", "128k",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                "-threads", "2",
+                "-c:a", "aac", "-b:a", "160k",
                 str(seg_path),
             ]
 
         logger.info(f"Cutting segment {i}: {cut.start:.2f}-{cut.end:.2f}")
         try:
-            _run_ffmpeg(cmd, f"segment-{i}", timeout=120)
+            _run_ffmpeg(cmd, f"segment-{i}", timeout=180)
             if seg_path.exists() and seg_path.stat().st_size > 0:
                 segment_paths.append(seg_path)
             else:
@@ -246,7 +247,7 @@ def compile_render(
     if failed_segments:
         logger.warning(f"{len(failed_segments)} of {len(edit_plan.main_cuts)} segments failed: {failed_segments}")
 
-    # Step 2: Handle b-roll inserts
+    # Step 2: Handle b-roll inserts (placeholder, currently not stitched here)
     broll_segments = {}
     if edit_plan.broll.enabled and edit_plan.broll.inserts:
         for bi in edit_plan.broll.inserts:
@@ -263,21 +264,8 @@ def compile_render(
             f.write(f"file '{sp}'\n")
 
     concat_path = work / "concat.mp4"
+    # Prefer stream copy (fast + low memory). Re-encode only if copy fails.
     try:
-        _run_ffmpeg(
-            [
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                "-i", str(segments_list_path),
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-                "-c:a", "aac", "-b:a", "128k",
-                str(concat_path),
-            ],
-            "concat",
-            timeout=180,
-        )
-    except RuntimeError:
-        # Try copy codec as fallback
-        logger.info("Concat re-encode failed, trying stream copy fallback")
         _run_ffmpeg(
             [
                 "ffmpeg", "-y", "-f", "concat", "-safe", "0",
@@ -286,6 +274,20 @@ def compile_render(
                 str(concat_path),
             ],
             "concat-copy",
+            timeout=180,
+        )
+    except RuntimeError:
+        logger.info("Concat stream-copy failed, falling back to re-encode")
+        _run_ffmpeg(
+            [
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "-i", str(segments_list_path),
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                "-threads", "2",
+                "-c:a", "aac", "-b:a", "160k",
+                str(concat_path),
+            ],
+            "concat",
             timeout=180,
         )
 
@@ -304,12 +306,13 @@ def compile_render(
                         "ffmpeg", "-y",
                         "-i", current_video,
                         "-vf", f"ass={ass_path}",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                        "-threads", "2",
                         "-c:a", "copy",
                         str(captioned_path),
                     ],
                     "burn-captions",
-                    timeout=180,
+                    timeout=MAX_RENDER_TIMEOUT_SEC,
                 )
                 current_video = str(captioned_path)
             except RuntimeError as e:
@@ -350,17 +353,17 @@ def compile_render(
                         f"[0:a][music]amix=inputs=2:duration=shortest:dropout_transition=2[aout]",
                         "-map", "0:v", "-map", "[aout]",
                         "-c:v", "copy",
-                        "-c:a", "aac", "-b:a", "128k",
+                        "-c:a", "aac", "-b:a", "160k",
                         str(music_out),
                     ],
                     "mix-music",
-                    timeout=180,
+                    timeout=MAX_RENDER_TIMEOUT_SEC,
                 )
                 current_video = str(music_out)
             except RuntimeError as e:
                 logger.warning(f"Music mix failed (non-fatal, continuing without music): {e}")
 
-    # Step 6: Final output encode
+    # Step 6: Final output REMUX (no re-encode; preserves quality + avoids extra load)
     output_dir = Path(output_path).parent
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -368,13 +371,11 @@ def compile_render(
         [
             "ffmpeg", "-y",
             "-i", current_video,
-            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-            "-c:a", "aac", "-b:a", "128k",
+            "-c", "copy",
             "-movflags", "+faststart",
             str(output_path),
         ],
-        "final-encode",
+        "final-remux",
         timeout=MAX_RENDER_TIMEOUT_SEC,
     )
 
