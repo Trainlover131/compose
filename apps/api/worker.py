@@ -179,13 +179,11 @@ def process_job(job_id: str):
         elapsed = int((time.monotonic() - stage_start) * 1000)
         _log_stage(job_id, "render", "done", elapsed_ms=elapsed)
 
-        # Store output
-        output_url = storage.get_url(output_key)
-
+        # Store output (store key only; URL is generated fresh in GET /jobs/{id})
         job.status = "done"
         job.progress_step = "done"
         job.output_file_path = output_key
-        job.output_url = output_url
+        job.output_url = ""  # optional: stop using this field entirely
         job.updated_at = datetime.now(timezone.utc)
         db.commit()
 
@@ -283,11 +281,9 @@ def process_revision(job_id: str, revision_id: str):
 
         storage.save_file(local_output_path, output_key)
 
-        output_url = storage.get_url(output_key)
-
         revision.status = "done"
         revision.output_file_path = output_key
-        revision.output_url = output_url
+        revision.output_url = ""  # optional: stop using this field entirely
         db.commit()
 
         elapsed = int((time.monotonic() - rev_start) * 1000)
