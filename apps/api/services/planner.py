@@ -123,7 +123,7 @@ Generate the EditPlan JSON now. Remember: ONLY valid JSON, no markdown."""
     for attempt in range(2):
         try:
             response = client.messages.create(
-                model="claude-haiku-4-20250414",
+                model="claude-haiku-4-5",
                 max_tokens=4096,
                 system=PLANNER_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
