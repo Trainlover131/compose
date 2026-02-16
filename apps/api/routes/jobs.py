@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 # Watchdog: jobs processing longer than this are marked as timed out
-JOB_TIMEOUT_MINUTES = 10
+JOB_TIMEOUT_MINUTES = 40
 
 
 def get_queue():
