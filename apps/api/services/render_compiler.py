@@ -329,10 +329,13 @@ def compile_render(
             broll_idx = idx + 1
             prep = f"br{idx}"
             out = f"v{idx}"
+            dur = bc["end"] - bc["start"]
             filters.append(
-                f"[{broll_idx}:v]setpts=PTS-STARTPTS,"
+                f"[{broll_idx}:v]trim=duration={dur:.3f},"
                 f"scale=1080:1920:force_original_aspect_ratio=increase,"
-                f"crop=1080:1920[{prep}]"
+                f"crop=1080:1920,"
+                f"setpts=PTS-STARTPTS+{bc['start']:.3f}/TB,"
+                f"tpad=stop_mode=clone:stop_duration={dur:.3f}[{prep}]"
             )
             filters.append(
                 f"[{last_label}][{prep}]overlay="
