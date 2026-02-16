@@ -343,7 +343,7 @@ def compile_render(
             filters.append(f"[{last_label}]ass={ass_path}[{cap_out}]")
             last_label = cap_out
 
-        cmd = ["ffmpeg", "-y"] + inputs + [
+        cmd = ["ffmpeg", "-y", "-filter_complex_threads", "1"] + inputs + [
             "-filter_complex", ";".join(filters),
             "-map", f"[{last_label}]", "-map", "0:a",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
@@ -357,6 +357,27 @@ def compile_render(
             current_video = str(overlay_path)
         except RuntimeError as e:
             logger.warning(f"B-roll overlay failed (non-fatal, continuing without): {e}")
+
+            # Fallback: at least burn captions if we have them
+            if has_captions:
+                captioned_path = work / "captioned.mp4"
+                try:
+                    _run_ffmpeg(
+                        [
+                            "ffmpeg", "-y",
+                            "-i", current_video,
+                            "-vf", f"ass={ass_path}",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                            "-threads", "2",
+                            "-c:a", "copy",
+                            str(captioned_path),
+                        ],
+                        "burn-captions-fallback",
+                        timeout=MAX_RENDER_TIMEOUT_SEC,
+                    )
+                    current_video = str(captioned_path)
+                except RuntimeError as e2:
+                    logger.warning(f"Caption burn fallback failed (non-fatal): {e2}")
 
     elif has_captions:
         # Caption-only burn (no b-roll assets — unchanged behavior)
