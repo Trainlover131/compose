@@ -225,7 +225,7 @@ def compile_render(
                 "ffmpeg", "-y",
                 "-i", source_video,
                 "-ss", str(cut.start), "-t", str(duration),
-                "-vf", f"scale={int(1080 * scale)}:{int(1920 * scale)},crop=1080:1920",
+                "-vf", f"{vf_base},scale=iw*{scale}:ih*{scale},crop=1080:1920",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-threads", "2",
                 "-af", "aresample=async=1:first_pts=0",
