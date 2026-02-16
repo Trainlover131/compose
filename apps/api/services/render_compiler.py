@@ -343,7 +343,8 @@ def compile_render(
             filters.append(f"[{last_label}]ass={ass_path}[{cap_out}]")
             last_label = cap_out
 
-        cmd = ["ffmpeg", "-y", "-filter_complex_threads", "1"] + inputs + [
+        cmd = ["ffmpeg", "-y"] + inputs + [
+            "-filter_complex_threads", "1",
             "-filter_complex", ";".join(filters),
             "-map", f"[{last_label}]", "-map", "0:a",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
@@ -351,6 +352,7 @@ def compile_render(
             "-c:a", "copy",
             str(overlay_path),
         ]
+        
         logger.info(f"B-roll overlay: {len(broll_clips)} clips" + (" + captions" if has_captions else ""))
         try:
             _run_ffmpeg(cmd, "overlay-captions", timeout=MAX_RENDER_TIMEOUT_SEC)
