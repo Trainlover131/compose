@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -186,6 +185,16 @@ def compile_render(
 
     logger.info(f"Starting render: {len(edit_plan.main_cuts)} cuts, output -> {output_path}")
 
+    # Aspect handling:
+    # - "fit": preserve aspect ratio and pad (no stretch, no crop) ✅ default
+    # - "fill": preserve aspect ratio and crop to fill 9:16 (no stretch, but crops edges)
+    fit_mode = "fit"  # later wire this to UI/preset
+
+    if fit_mode == "fill":
+        vf_base = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
+    else:
+        vf_base = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2"
+
     # Step 1: Cut and concatenate main segments
     segments_list_path = work / "segments.txt"
     segment_paths = []
@@ -204,6 +213,20 @@ def compile_render(
 
         if punch_in:
             scale = punch_in.scale
+
+            if fit_mode == "fill":
+                vf = (
+                    "scale=1080:1920:force_original_aspect_ratio=increase,"
+                    "crop=1080:1920,"
+                    f"zoompan=z={scale}:d=1:s=1080x1920"
+                )
+            else:
+                vf = (
+                    "scale=1080:1920:force_original_aspect_ratio=decrease,"
+                    "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,"
+                    f"zoompan=z={scale}:d=1:s=1080x1920"
+                )
+
             cmd = [
                 "ffmpeg", "-y",
                 "-i", source_video,
@@ -231,7 +254,7 @@ def compile_render(
 
         logger.info(f"Cutting segment {i}: {cut.start:.2f}-{cut.end:.2f}")
         try:
-            _run_ffmpeg(cmd, f"segment-{i}", timeout=120)
+            _run_ffmpeg(cmd, f"segment-{i}", timeout=180)
             if seg_path.exists() and seg_path.stat().st_size > 0:
                 segment_paths.append(seg_path)
             else:
@@ -250,7 +273,7 @@ def compile_render(
     if failed_segments:
         logger.warning(f"{len(failed_segments)} of {len(edit_plan.main_cuts)} segments failed: {failed_segments}")
 
-    # Step 2: Handle b-roll inserts
+    # Step 2: Handle b-roll inserts (placeholder, currently not stitched here)
     broll_segments = {}
     if edit_plan.broll.enabled and edit_plan.broll.inserts:
         for bi in edit_plan.broll.inserts:
@@ -296,12 +319,13 @@ def compile_render(
                         "ffmpeg", "-y",
                         "-i", current_video,
                         "-vf", f"ass={ass_path}",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                        "-threads", "2",
                         "-c:a", "copy",
                         str(captioned_path),
                     ],
                     "burn-captions",
-                    timeout=180,
+                    timeout=MAX_RENDER_TIMEOUT_SEC,
                 )
                 current_video = str(captioned_path)
             except RuntimeError as e:
@@ -342,17 +366,17 @@ def compile_render(
                         f"[0:a][music]amix=inputs=2:duration=shortest:dropout_transition=2[aout]",
                         "-map", "0:v", "-map", "[aout]",
                         "-c:v", "copy",
-                        "-c:a", "aac", "-b:a", "128k",
+                        "-c:a", "aac", "-b:a", "160k",
                         str(music_out),
                     ],
                     "mix-music",
-                    timeout=180,
+                    timeout=MAX_RENDER_TIMEOUT_SEC,
                 )
                 current_video = str(music_out)
             except RuntimeError as e:
                 logger.warning(f"Music mix failed (non-fatal, continuing without music): {e}")
 
-    # Step 6: Final output encode
+    # Step 6: Final output REMUX (no re-encode; preserves quality + avoids extra load)
     output_dir = Path(output_path).parent
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -360,13 +384,11 @@ def compile_render(
         [
             "ffmpeg", "-y",
             "-i", current_video,
-            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-            "-c:a", "aac", "-b:a", "128k",
+            "-c", "copy",
             "-movflags", "+faststart",
             str(output_path),
         ],
-        "final-encode",
+        "final-remux",
         timeout=MAX_RENDER_TIMEOUT_SEC,
     )
 
