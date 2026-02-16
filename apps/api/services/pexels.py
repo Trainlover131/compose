@@ -92,7 +92,8 @@ def download_video(url: str, target_duration: float = 10.0) -> str | None:
 
         # Trim to target duration and convert to 9:16 if needed
         cmd = [
-            "ffmpeg", "-y", "-i", str(raw_path),
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(raw_path),
             "-t", str(target_duration),
             "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
@@ -106,7 +107,13 @@ def download_video(url: str, target_duration: float = 10.0) -> str | None:
             logger.info(f"B-roll downloaded and processed: {cached_path}")
             return str(cached_path)
         else:
-            logger.error(f"B-roll processing failed: {result.stderr.decode()[:200]}")
+            stderr_text = result.stderr.decode("utf-8", errors="replace")
+            stderr_tail = stderr_text[-2000:] if len(stderr_text) > 2000 else stderr_text
+            logger.error(
+                f"B-roll ffmpeg failed (rc={result.returncode})\n"
+                f"  cmd: {' '.join(cmd)}\n"
+                f"  stderr: {stderr_tail}"
+            )
             return None
 
     except Exception as e:

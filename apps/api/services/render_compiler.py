@@ -298,32 +298,82 @@ def compile_render(
         timeout=180,
     )
 
-    # Step 4: Generate and burn captions
+    # Step 4: Overlay b-roll and burn captions
     current_video = str(concat_path)
 
-    if edit_plan.captions.enabled:
-        ass_path = str(work / "captions.ass")
-        generate_ass_subtitles(transcript, edit_plan, ass_path)
+    # Collect valid b-roll clips sorted by start time
+    broll_clips = sorted(broll_segments.values(), key=lambda b: b["start"]) if broll_segments else []
 
-        if Path(ass_path).exists() and Path(ass_path).stat().st_size > 100:
-            captioned_path = work / "captioned.mp4"
-            try:
-                _run_ffmpeg(
-                    [
-                        "ffmpeg", "-y",
-                        "-i", current_video,
-                        "-vf", f"ass={ass_path}",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-                        "-threads", "2",
-                        "-c:a", "copy",
-                        str(captioned_path),
-                    ],
-                    "burn-captions",
-                    timeout=MAX_RENDER_TIMEOUT_SEC,
-                )
-                current_video = str(captioned_path)
-            except RuntimeError as e:
-                logger.warning(f"Caption burn failed (non-fatal, continuing without captions): {e}")
+    has_captions = False
+    ass_path = str(work / "captions.ass")
+    if edit_plan.captions.enabled:
+        generate_ass_subtitles(transcript, edit_plan, ass_path)
+        has_captions = Path(ass_path).exists() and Path(ass_path).stat().st_size > 100
+
+    if broll_clips:
+        # Build overlay filter with optional caption burn in a single pass
+        overlay_path = work / "overlay.mp4"
+        inputs = ["-i", current_video]
+        for bc in broll_clips:
+            inputs.extend(["-i", bc["path"]])
+
+        filters = []
+        last_label = "0:v"
+        for idx, bc in enumerate(broll_clips):
+            broll_idx = idx + 1
+            prep = f"br{idx}"
+            out = f"v{idx}"
+            filters.append(
+                f"[{broll_idx}:v]setpts=PTS-STARTPTS,"
+                f"scale=1080:1920:force_original_aspect_ratio=increase,"
+                f"crop=1080:1920[{prep}]"
+            )
+            filters.append(
+                f"[{last_label}][{prep}]overlay="
+                f"enable='between(t,{bc['start']:.3f},{bc['end']:.3f})'[{out}]"
+            )
+            last_label = out
+
+        if has_captions:
+            cap_out = "vcap"
+            filters.append(f"[{last_label}]ass={ass_path}[{cap_out}]")
+            last_label = cap_out
+
+        cmd = ["ffmpeg", "-y"] + inputs + [
+            "-filter_complex", ";".join(filters),
+            "-map", f"[{last_label}]", "-map", "0:a",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-threads", "2",
+            "-c:a", "copy",
+            str(overlay_path),
+        ]
+        logger.info(f"B-roll overlay: {len(broll_clips)} clips" + (" + captions" if has_captions else ""))
+        try:
+            _run_ffmpeg(cmd, "overlay-captions", timeout=MAX_RENDER_TIMEOUT_SEC)
+            current_video = str(overlay_path)
+        except RuntimeError as e:
+            logger.warning(f"B-roll overlay failed (non-fatal, continuing without): {e}")
+
+    elif has_captions:
+        # Caption-only burn (no b-roll assets — unchanged behavior)
+        captioned_path = work / "captioned.mp4"
+        try:
+            _run_ffmpeg(
+                [
+                    "ffmpeg", "-y",
+                    "-i", current_video,
+                    "-vf", f"ass={ass_path}",
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                    "-threads", "2",
+                    "-c:a", "copy",
+                    str(captioned_path),
+                ],
+                "burn-captions",
+                timeout=MAX_RENDER_TIMEOUT_SEC,
+            )
+            current_video = str(captioned_path)
+        except RuntimeError as e:
+            logger.warning(f"Caption burn failed (non-fatal, continuing without captions): {e}")
 
     # Step 5: Mix in music
     if edit_plan.music.enabled:
