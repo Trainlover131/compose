@@ -206,22 +206,26 @@ def compile_render(
             scale = punch_in.scale
             cmd = [
                 "ffmpeg", "-y",
-                "-ss", str(cut.start), "-t", str(duration),
                 "-i", source_video,
+                "-ss", str(cut.start), "-t", str(duration),
                 "-vf", f"scale={int(1080 * scale)}:{int(1920 * scale)},crop=1080:1920",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-                "-c:a", "aac", "-b:a", "128k",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                "-threads", "2",
+                "-af", "aresample=async=1:first_pts=0",
+                "-c:a", "aac", "-b:a", "160k",
                 str(seg_path),
             ]
         else:
             # Simple trim - ensure 9:16 output
             cmd = [
                 "ffmpeg", "-y",
-                "-ss", str(cut.start), "-t", str(duration),
                 "-i", source_video,
+                "-ss", str(cut.start), "-t", str(duration),
                 "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-                "-c:a", "aac", "-b:a", "128k",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                "-threads", "2",
+                "-af", "aresample=async=1:first_pts=0",
+                "-c:a", "aac", "-b:a", "160k",
                 str(seg_path),
             ]
 
@@ -263,31 +267,19 @@ def compile_render(
             f.write(f"file '{sp}'\n")
 
     concat_path = work / "concat.mp4"
-    try:
-        _run_ffmpeg(
-            [
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                "-i", str(segments_list_path),
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-                "-c:a", "aac", "-b:a", "128k",
-                str(concat_path),
-            ],
-            "concat",
-            timeout=180,
-        )
-    except RuntimeError:
-        # Try copy codec as fallback
-        logger.info("Concat re-encode failed, trying stream copy fallback")
-        _run_ffmpeg(
-            [
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                "-i", str(segments_list_path),
-                "-c", "copy",
-                str(concat_path),
-            ],
-            "concat-copy",
-            timeout=180,
-        )
+    _run_ffmpeg(
+        [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", str(segments_list_path),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-threads", "2",
+            "-af", "aresample=async=1:first_pts=0",
+            "-c:a", "aac", "-b:a", "160k",
+            str(concat_path),
+        ],
+        "concat",
+        timeout=180,
+    )
 
     # Step 4: Generate and burn captions
     current_video = str(concat_path)
