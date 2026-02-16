@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 # Maximum chars of FFmpeg stderr to include in error messages
 _MAX_STDERR_CHARS = 2000
 
-
 def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subprocess.CompletedProcess:
     """Run an FFmpeg command with proper error capture.
 
@@ -30,7 +29,6 @@ def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subproces
             f"FFmpeg {step_name} failed: {stderr_tail.strip()[-500:]}"
         )
     return result
-
 
 def generate_ass_subtitles(
     transcript: dict,
@@ -133,7 +131,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     logger.info(f"ASS subtitles generated: {len(chunks)} chunks -> {output_path}")
     return output_path
 
-
 def _build_timeline_map(edit_plan: EditPlan) -> list[dict]:
     """Build a mapping from original video time to final timeline time."""
     timeline = []
@@ -148,7 +145,6 @@ def _build_timeline_map(edit_plan: EditPlan) -> list[dict]:
         offset += cut.end - cut.start
     return timeline
 
-
 def _map_time(orig_time: float, timeline_map: list[dict]) -> float | None:
     """Map an original video timestamp to the final timeline."""
     for entry in timeline_map:
@@ -157,7 +153,6 @@ def _map_time(orig_time: float, timeline_map: list[dict]) -> float | None:
             return entry["final_start"] + offset_in_cut
     return None
 
-
 def _format_ass_time(seconds: float) -> str:
     """Format seconds as ASS timestamp (H:MM:SS.CC)."""
     h = int(seconds // 3600)
@@ -165,7 +160,6 @@ def _format_ass_time(seconds: float) -> str:
     s = int(seconds % 60)
     cs = int((seconds % 1) * 100)
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
-
 
 def compile_render(
     edit_plan: EditPlan,
@@ -231,7 +225,7 @@ def compile_render(
                 "ffmpeg", "-y",
                 "-i", source_video,
                 "-ss", str(cut.start), "-t", str(duration),
-                "-vf", vf,
+                "-vf", f"{vf_base},zoompan=z={scale}:d=1:s=1080x1920",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-threads", "2",
                 "-af", "aresample=async=1:first_pts=0",
@@ -244,7 +238,7 @@ def compile_render(
                 "ffmpeg", "-y",
                 "-i", source_video,
                 "-ss", str(cut.start), "-t", str(duration),
-                "-vf", vf_base,
+                "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-threads", "2",
                 "-af", "aresample=async=1:first_pts=0",
@@ -289,37 +283,47 @@ def compile_render(
         for sp in segment_paths:
             f.write(f"file '{sp}'\n")
 
-    # If captions are enabled, generate ASS BEFORE concat so we can burn during concat
-    ass_path: str | None = None
-    if edit_plan.captions.enabled:
-        candidate_ass = str(work / "captions.ass")
-        generate_ass_subtitles(transcript, edit_plan, candidate_ass)
-        if Path(candidate_ass).exists() and Path(candidate_ass).stat().st_size > 100:
-            ass_path = candidate_ass
-
     concat_path = work / "concat.mp4"
+    _run_ffmpeg(
+        [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", str(segments_list_path),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-threads", "2",
+            "-af", "aresample=async=1:first_pts=0",
+            "-c:a", "aac", "-b:a", "160k",
+            str(concat_path),
+        ],
+        "concat",
+        timeout=180,
+    )
 
-    concat_cmd = [
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-        "-i", str(segments_list_path),
-    ]
-
-    # Burn captions during concat (single pass) if we have a valid ASS file
-    if ass_path is not None:
-        concat_cmd += ["-vf", f"ass={ass_path}"]
-
-    concat_cmd += [
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-        "-threads", "2",
-        "-af", "aresample=async=1:first_pts=0",
-        "-c:a", "aac", "-b:a", "160k",
-        str(concat_path),
-    ]
-
-    _run_ffmpeg(concat_cmd, "concat", timeout=180)
-
-    # Step 4 removed: captions are handled in Step 3 now
+    # Step 4: Generate and burn captions
     current_video = str(concat_path)
+
+    if edit_plan.captions.enabled:
+        ass_path = str(work / "captions.ass")
+        generate_ass_subtitles(transcript, edit_plan, ass_path)
+
+        if Path(ass_path).exists() and Path(ass_path).stat().st_size > 100:
+            captioned_path = work / "captioned.mp4"
+            try:
+                _run_ffmpeg(
+                    [
+                        "ffmpeg", "-y",
+                        "-i", current_video,
+                        "-vf", f"ass={ass_path}",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                        "-threads", "2",
+                        "-c:a", "copy",
+                        str(captioned_path),
+                    ],
+                    "burn-captions",
+                    timeout=MAX_RENDER_TIMEOUT_SEC,
+                )
+                current_video = str(captioned_path)
+            except RuntimeError as e:
+                logger.warning(f"Caption burn failed (non-fatal, continuing without captions): {e}")
 
     # Step 5: Mix in music
     if edit_plan.music.enabled:
@@ -384,7 +388,6 @@ def compile_render(
 
     logger.info(f"Render complete: {output_path}")
     return output_path
-
 
 def _get_music_track(track_id: str) -> str | None:
     """Get path to a built-in music track."""
