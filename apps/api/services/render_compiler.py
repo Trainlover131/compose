@@ -229,11 +229,12 @@ def compile_render(
 
             cmd = [
                 "ffmpeg", "-y",
-                "-ss", str(cut.start), "-t", str(duration),
                 "-i", source_video,
-                "-vf", vf,
+                "-ss", str(cut.start), "-t", str(duration),
+                "-vf", f"scale={int(1080 * scale)}:{int(1920 * scale)},crop=1080:1920",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-threads", "2",
+                "-af", "aresample=async=1:first_pts=0",
                 "-c:a", "aac", "-b:a", "160k",
                 str(seg_path),
             ]
@@ -241,11 +242,12 @@ def compile_render(
             # Simple trim - ensure 9:16 output
             cmd = [
                 "ffmpeg", "-y",
-                "-ss", str(cut.start), "-t", str(duration),
                 "-i", source_video,
-                "-vf", vf_base,
+                "-ss", str(cut.start), "-t", str(duration),
+                "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-threads", "2",
+                "-af", "aresample=async=1:first_pts=0",
                 "-c:a", "aac", "-b:a", "160k",
                 str(seg_path),
             ]
@@ -288,32 +290,19 @@ def compile_render(
             f.write(f"file '{sp}'\n")
 
     concat_path = work / "concat.mp4"
-    # Prefer stream copy (fast + low memory). Re-encode only if copy fails.
-    try:
-        _run_ffmpeg(
-            [
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                "-i", str(segments_list_path),
-                "-c", "copy",
-                str(concat_path),
-            ],
-            "concat-copy",
-            timeout=180,
-        )
-    except RuntimeError:
-        logger.info("Concat stream-copy failed, falling back to re-encode")
-        _run_ffmpeg(
-            [
-                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                "-i", str(segments_list_path),
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-                "-threads", "2",
-                "-c:a", "aac", "-b:a", "160k",
-                str(concat_path),
-            ],
-            "concat",
-            timeout=180,
-        )
+    _run_ffmpeg(
+        [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", str(segments_list_path),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-threads", "2",
+            "-af", "aresample=async=1:first_pts=0",
+            "-c:a", "aac", "-b:a", "160k",
+            str(concat_path),
+        ],
+        "concat",
+        timeout=180,
+    )
 
     # Step 4: Generate and burn captions
     current_video = str(concat_path)
