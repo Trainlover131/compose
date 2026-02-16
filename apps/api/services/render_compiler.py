@@ -289,47 +289,37 @@ def compile_render(
         for sp in segment_paths:
             f.write(f"file '{sp}'\n")
 
-    concat_path = work / "concat.mp4"
-    _run_ffmpeg(
-        [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-            "-i", str(segments_list_path),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-            "-threads", "2",
-            "-af", "aresample=async=1:first_pts=0",
-            "-c:a", "aac", "-b:a", "160k",
-            str(concat_path),
-        ],
-        "concat",
-        timeout=180,
-    )
-
-    # Step 4: Generate and burn captions
-    current_video = str(concat_path)
-
+    # If captions are enabled, generate ASS BEFORE concat so we can burn during concat
+    ass_path: str | None = None
     if edit_plan.captions.enabled:
-        ass_path = str(work / "captions.ass")
-        generate_ass_subtitles(transcript, edit_plan, ass_path)
+        candidate_ass = str(work / "captions.ass")
+        generate_ass_subtitles(transcript, edit_plan, candidate_ass)
+        if Path(candidate_ass).exists() and Path(candidate_ass).stat().st_size > 100:
+            ass_path = candidate_ass
 
-        if Path(ass_path).exists() and Path(ass_path).stat().st_size > 100:
-            captioned_path = work / "captioned.mp4"
-            try:
-                _run_ffmpeg(
-                    [
-                        "ffmpeg", "-y",
-                        "-i", current_video,
-                        "-vf", f"ass={ass_path}",
-                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-                        "-threads", "2",
-                        "-c:a", "copy",
-                        str(captioned_path),
-                    ],
-                    "burn-captions",
-                    timeout=MAX_RENDER_TIMEOUT_SEC,
-                )
-                current_video = str(captioned_path)
-            except RuntimeError as e:
-                logger.warning(f"Caption burn failed (non-fatal, continuing without captions): {e}")
+    concat_path = work / "concat.mp4"
+
+    concat_cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(segments_list_path),
+    ]
+
+    # Burn captions during concat (single pass) if we have a valid ASS file
+    if ass_path is not None:
+        concat_cmd += ["-vf", f"ass={ass_path}"]
+
+    concat_cmd += [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+        "-threads", "2",
+        "-af", "aresample=async=1:first_pts=0",
+        "-c:a", "aac", "-b:a", "160k",
+        str(concat_path),
+    ]
+
+    _run_ffmpeg(concat_cmd, "concat", timeout=180)
+
+    # Step 4 removed: captions are handled in Step 3 now
+    current_video = str(concat_path)
 
     # Step 5: Mix in music
     if edit_plan.music.enabled:
