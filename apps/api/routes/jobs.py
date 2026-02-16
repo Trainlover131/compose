@@ -230,7 +230,7 @@ def _persist_and_enqueue(
 
     queue = get_queue()
     if queue:
-        queue.enqueue(process_job, job_id, job_timeout=600)
+        queue.enqueue(process_job, job_id, job_timeout=2400)
         logger.info(f"Job {job_id} enqueued to Redis")
     else:
         _run_in_thread(process_job, (job_id,), job_id)
@@ -317,7 +317,7 @@ async def create_edit(
     # Enqueue revision job
     queue = get_queue()
     if queue:
-        queue.enqueue(process_revision, job_id, revision.id, job_timeout=600)
+        queue.enqueue(process_revision, job_id, revision.id, job_timeout=2400)
     else:
         _run_in_thread(process_revision, (job_id, revision.id), job_id)
 
