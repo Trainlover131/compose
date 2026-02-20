@@ -264,6 +264,27 @@ def _find_keyword_hits(words: list[dict], keyword: str) -> list[dict]:
     return hits
 
 
+def _filter_nonoverlapping_anchors(anchors: list[dict], min_gap_s: float = 0.0) -> list[dict]:
+    """Given anchors sorted by orig_start, drop any that overlap the previous kept anchor.
+
+    Invariant enforced:
+      next.orig_start >= prev.orig_end (+ optional min_gap_s)
+    """
+    if not anchors:
+        return []
+
+    anchors = sorted(anchors, key=lambda a: a["orig_start"])
+    kept: list[dict] = [anchors[0]]
+
+    for a in anchors[1:]:
+        prev = kept[-1]
+        if a["orig_start"] < (prev["orig_end"] + min_gap_s):
+            continue
+        kept.append(a)
+
+    return kept
+
+
 def _make_anchor_windows(
     transcript: dict,
     prompt: str,
@@ -283,10 +304,12 @@ def _make_anchor_windows(
 
     # Also scan transcript itself for brand seeds
     all_text_lower = " ".join(w["word"] for w in words).lower()
+    existing = {_normalize_token(k) for k in keywords}
     for brand in _BRAND_SEEDS:
         n = _normalize_token(brand)
-        if n in all_text_lower and n not in {_normalize_token(k) for k in keywords}:
+        if n in all_text_lower and n not in existing:
             keywords.append(n)
+            existing.add(n)
 
     anchors: list[dict] = []
     used_starts: set[float] = set()
@@ -299,21 +322,27 @@ def _make_anchor_windows(
             if rounded in used_starts:
                 continue
             used_starts.add(rounded)
+
+            candidate_start = round(max(0.0, hit["start"] - pad_before), 3)
+            candidate_end = round(hit["start"] - pad_before + logo_dur_s, 3)
+
             anchors.append({
                 "keyword": kw,
                 "anchor_phrase": hit["word"],
-                "orig_start": round(max(0.0, hit["start"] - pad_before), 3),
-                "orig_end": round(hit["start"] - pad_before + logo_dur_s, 3),
+                "orig_start": candidate_start,
+                "orig_end": candidate_end,
             })
+
             if len(anchors) >= max_anchors:
                 break
         if len(anchors) >= max_anchors:
             break
 
-    # Sort by original start
-    anchors.sort(key=lambda a: a["orig_start"])
-    return anchors
+    # Sort + hard enforce non-overlap chronologically (order-independent)
+    anchors = _filter_nonoverlapping_anchors(anchors)
 
+    # Enforce max_anchors after filtering (filtering can only reduce count)
+    return anchors[:max_anchors]
 
 # ===================================================================
 # Timeline mapping  (original -> final after cuts)
@@ -776,14 +805,29 @@ Generate the EditPlan JSON now. Remember: ONLY valid JSON, no markdown."""
         try:
             raw = _strip_fences(raw)
             plan_data = json.loads(raw)
-            # Ensure broll/overlays are empty for pass 1
-            plan_data.setdefault("broll", {"enabled": False, "inserts": []})
-            plan_data.setdefault("overlays", {"enabled": False, "items": []})
+
+            # Ensure broll/overlays are present and EMPTY for pass 1
+            # (timing/contents added deterministically in later passes)
+            if not isinstance(plan_data.get("broll"), dict):
+                plan_data["broll"] = {}
+            plan_data["broll"]["enabled"] = False
+            plan_data["broll"]["strategy"] = plan_data["broll"].get("strategy", "cutaway_fullscreen")
+            plan_data["broll"]["inserts"] = []
+
+            if not isinstance(plan_data.get("overlays"), dict):
+                plan_data["overlays"] = {}
+            plan_data["overlays"]["enabled"] = False
+            plan_data["overlays"]["items"] = []
+
             plan = EditPlan.model_validate(plan_data)
+
             if plan.total_duration() < 10:
                 raise ValueError("Plan total duration too short (< 10s)")
-            logger.info(f"Pass 1 plan: {len(plan.main_cuts)} cuts, "
-                       f"{len(plan.punch_ins)} punch-ins")
+
+            logger.info(
+                f"Pass 1 plan: {len(plan.main_cuts)} cuts, "
+                f"{len(plan.punch_ins)} punch-ins"
+            )
             break
         except Exception as e:
             if attempt == 0:
@@ -811,7 +855,7 @@ Generate the EditPlan JSON now. Remember: ONLY valid JSON, no markdown."""
     # PASS 2:  Overlays (word-timestamp-locked)
     # ---------------------------------------------------------------
     final_overlay_anchors = _anchors_to_final_timeline(orig_anchors, plan.main_cuts)
-    final_overlay_anchors = _enforce_nonoverlap(final_overlay_anchors)
+    # do NOT enforce non-overlap on anchors; enforce on overlay_items later
 
     overlay_items: list[dict] = []
     if final_overlay_anchors:
@@ -847,24 +891,26 @@ Rules:
                 raw2 = _strip_fences(raw2)
                 overlay_data = json.loads(raw2)
                 claude_items = overlay_data.get("overlays", {}).get("items", [])
+
                 if _validate_claude_overlays(claude_items, final_overlay_anchors):
-                    overlay_items = _enforce_nonoverlap(claude_items)
+                    # Keep exact locked timing (do NOT shift)
+                    overlay_items = claude_items
                     logger.info(f"Pass 2: Claude returned {len(overlay_items)} valid overlays")
                 else:
                     logger.warning("Pass 2: Claude changed overlay timing or count, using fallback")
                     overlay_items = _fallback_overlays(final_overlay_anchors)
+
             except Exception as e:
                 logger.warning(f"Pass 2 overlay parse failed: {e}, using fallback")
                 overlay_items = _fallback_overlays(final_overlay_anchors)
         else:
             overlay_items = _fallback_overlays(final_overlay_anchors)
-
     # ---------------------------------------------------------------
     # PASS 3:  B-roll timing lock (abstract concepts only)
     # ---------------------------------------------------------------
     orig_broll_anchors = _build_broll_anchors(orig_anchors, plan.main_cuts, broll_dur_s=1.6)
     final_broll_anchors = _anchors_to_final_timeline(orig_broll_anchors, plan.main_cuts)
-    final_broll_anchors = _enforce_nonoverlap(final_broll_anchors)
+    
 
     broll_inserts: list[dict] = []
     if final_broll_anchors:
@@ -899,12 +945,15 @@ Rules:
                 raw3 = _strip_fences(raw3)
                 broll_data = json.loads(raw3)
                 claude_inserts = broll_data.get("broll", {}).get("inserts", [])
+
                 if _validate_claude_broll(claude_inserts, final_broll_anchors):
-                    broll_inserts = _enforce_nonoverlap(claude_inserts)
+                    # Keep exact locked timing (do NOT shift)
+                    broll_inserts = claude_inserts
                     logger.info(f"Pass 3: Claude returned {len(broll_inserts)} valid b-roll inserts")
                 else:
                     logger.warning("Pass 3: Claude changed b-roll timing or count, using fallback")
                     broll_inserts = _fallback_broll(final_broll_anchors)
+
             except Exception as e:
                 logger.warning(f"Pass 3 b-roll parse failed: {e}, using fallback")
                 broll_inserts = _fallback_broll(final_broll_anchors)

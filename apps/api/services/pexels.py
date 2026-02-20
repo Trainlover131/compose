@@ -86,10 +86,14 @@ def download_video(url: str, target_duration: float = 10.0) -> str | None:
 
     try:
         logger.info(f"Downloading b-roll: {url[:80]}...")
+
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-            resp = client.get(url)
-            resp.raise_for_status()
-            raw_path.write_bytes(resp.content)
+            with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                with open(raw_path, "wb") as f:
+                    for chunk in resp.iter_bytes():
+                        if chunk:
+                            f.write(chunk)
 
         logger.info(f"B-roll downloaded: {raw_path} ({raw_path.stat().st_size} bytes)")
         return str(raw_path)
@@ -97,7 +101,6 @@ def download_video(url: str, target_duration: float = 10.0) -> str | None:
     except Exception as e:
         logger.error(f"B-roll download failed: {e}")
         return None
-
 
 def fetch_broll_for_plan(broll_inserts: list[dict]) -> list[dict]:
     """Fetch b-roll clips for all inserts in the edit plan.

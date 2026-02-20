@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 # Maximum chars of FFmpeg stderr to include in error messages
 _MAX_STDERR_CHARS = 2000
 
-
 def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subprocess.CompletedProcess:
     """Run an FFmpeg command with proper error capture.
 
@@ -30,7 +29,6 @@ def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subproces
             f"FFmpeg {step_name} failed: {stderr_tail.strip()[-500:]}"
         )
     return result
-
 
 def generate_ass_subtitles(
     transcript: dict,
@@ -133,7 +131,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     logger.info(f"ASS subtitles generated: {len(chunks)} chunks -> {output_path}")
     return output_path
 
-
 def _build_timeline_map(edit_plan: EditPlan) -> list[dict]:
     """Build a mapping from original video time to final timeline time."""
     timeline = []
@@ -148,7 +145,6 @@ def _build_timeline_map(edit_plan: EditPlan) -> list[dict]:
         offset += cut.end - cut.start
     return timeline
 
-
 def _map_time(orig_time: float, timeline_map: list[dict]) -> float | None:
     """Map an original video timestamp to the final timeline."""
     for entry in timeline_map:
@@ -157,7 +153,6 @@ def _map_time(orig_time: float, timeline_map: list[dict]) -> float | None:
             return entry["final_start"] + offset_in_cut
     return None
 
-
 def _format_ass_time(seconds: float) -> str:
     """Format seconds as ASS timestamp (H:MM:SS.CC)."""
     h = int(seconds // 3600)
@@ -165,7 +160,6 @@ def _format_ass_time(seconds: float) -> str:
     s = int(seconds % 60)
     cs = int((seconds % 1) * 100)
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
-
 
 def compile_render(
     edit_plan: EditPlan,
@@ -231,7 +225,7 @@ def compile_render(
                 "ffmpeg", "-y",
                 "-i", source_video,
                 "-ss", str(cut.start), "-t", str(duration),
-                "-vf", f"scale={int(1080 * scale)}:{int(1920 * scale)},crop=1080:1920",
+                "-vf", f"{vf_base},scale=iw*{scale}:ih*{scale},crop=1080:1920",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-threads", "2",
                 "-af", "aresample=async=1:first_pts=0",
@@ -349,6 +343,7 @@ def compile_render(
             last_label = cap_out
 
         cmd = ["ffmpeg", "-y"] + inputs + [
+            "-filter_complex_threads", "1",
             "-filter_complex", ";".join(filters),
             "-map", f"[{last_label}]", "-map", "0:a",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
@@ -356,12 +351,34 @@ def compile_render(
             "-c:a", "copy",
             str(overlay_path),
         ]
+        
         logger.info(f"B-roll overlay: {len(broll_clips)} clips" + (" + captions" if has_captions else ""))
         try:
             _run_ffmpeg(cmd, "overlay-captions", timeout=MAX_RENDER_TIMEOUT_SEC)
             current_video = str(overlay_path)
         except RuntimeError as e:
             logger.warning(f"B-roll overlay failed (non-fatal, continuing without): {e}")
+
+            # Fallback: at least burn captions if we have them
+            if has_captions:
+                captioned_path = work / "captioned.mp4"
+                try:
+                    _run_ffmpeg(
+                        [
+                            "ffmpeg", "-y",
+                            "-i", current_video,
+                            "-vf", f"ass={ass_path}",
+                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                            "-threads", "2",
+                            "-c:a", "copy",
+                            str(captioned_path),
+                        ],
+                        "burn-captions-fallback",
+                        timeout=MAX_RENDER_TIMEOUT_SEC,
+                    )
+                    current_video = str(captioned_path)
+                except RuntimeError as e2:
+                    logger.warning(f"Caption burn fallback failed (non-fatal): {e2}")
 
     elif has_captions:
         # Caption-only burn (no b-roll assets — unchanged behavior)
@@ -447,7 +464,6 @@ def compile_render(
 
     logger.info(f"Render complete: {output_path}")
     return output_path
-
 
 def _get_music_track(track_id: str) -> str | None:
     """Get path to a built-in music track."""

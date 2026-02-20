@@ -59,7 +59,7 @@ Return ONLY the PlanPatch JSON with minimal changes needed."""
     for attempt in range(2):
         try:
             response = client.messages.create(
-                model="claude-haiku-4-20250414",
+                model="claude-haiku-4-5",
                 max_tokens=2048,
                 system=PATCHER_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
