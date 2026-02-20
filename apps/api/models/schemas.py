@@ -70,6 +70,44 @@ class BrollConfig(BaseModel):
     inserts: list[BrollInsert] = []
 
 
+class OverlayPlacement(BaseModel):
+    x: float = Field(default=0.82, ge=0.0, le=1.0)
+    y: float = Field(default=0.12, ge=0.0, le=1.0)
+    w: float = Field(default=0.18, ge=0.0, le=1.0)
+
+
+class OverlayAnimation(BaseModel):
+    fade_in: float = 0.12
+    fade_out: float = 0.12
+
+
+class OverlayItem(BaseModel):
+    type: str = "image_overlay"  # "image_overlay" | "video_overlay"
+    start: float
+    end: float
+    anchor_phrase: str = ""
+    keyword: str = ""
+    query: str = ""
+    source: str = "ai"  # "ai" | "pexels"
+    style_hint: str = ""
+    placement: OverlayPlacement = OverlayPlacement()
+    animation: OverlayAnimation = OverlayAnimation()
+    notes: str = ""
+    asset_path: Optional[str] = None
+
+    @field_validator("end")
+    @classmethod
+    def end_after_start(cls, v: float, info) -> float:
+        if "start" in info.data and v <= info.data["start"]:
+            raise ValueError("end must be after start")
+        return v
+
+
+class OverlayConfig(BaseModel):
+    enabled: bool = True
+    items: list[OverlayItem] = []
+
+
 class CaptionConfig(BaseModel):
     enabled: bool = True
     style_id: str = "default"
@@ -95,6 +133,7 @@ class EditPlan(BaseModel):
     main_cuts: list[MainCut] = []
     punch_ins: list[PunchIn] = []
     broll: BrollConfig = BrollConfig()
+    overlays: OverlayConfig = OverlayConfig()
     captions: CaptionConfig = CaptionConfig()
     music: MusicConfig = MusicConfig()
     rationale: Rationale = Rationale()
@@ -109,6 +148,18 @@ class EditPlan(BaseModel):
             if sorted_cuts[i].start < sorted_cuts[i - 1].end:
                 raise ValueError(f"main_cuts overlap at index {i}")
         return sorted_cuts
+
+    @field_validator("overlays")
+    @classmethod
+    def overlays_sorted_non_overlapping(cls, v: OverlayConfig) -> OverlayConfig:
+        if not v.items:
+            return v
+        sorted_items = sorted(v.items, key=lambda o: o.start)
+        for i in range(1, len(sorted_items)):
+            if sorted_items[i].start < sorted_items[i - 1].end:
+                raise ValueError(f"overlays.items overlap at index {i}")
+        v.items = sorted_items
+        return v
 
     def total_duration(self) -> float:
         return sum(c.end - c.start for c in self.main_cuts)

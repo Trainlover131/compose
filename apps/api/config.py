@@ -28,6 +28,7 @@ ALLOWED_ORIGINS = [
 # APIs
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
+NANOBANANA_API_KEY = os.getenv("NANOBANANA_API_KEY", "")
 
 # Database
 DATABASE_URL = os.getenv(
