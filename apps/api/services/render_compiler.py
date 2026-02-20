@@ -324,7 +324,6 @@ def compile_render(
             prep = f"br{idx}"
             out = f"v{idx}"
             dur = bc["end"] - bc["start"]
-
             filters.append(
                 f"[{broll_idx}:v]trim=duration={dur:.3f},"
                 f"scale=1080:1920:force_original_aspect_ratio=increase,"
