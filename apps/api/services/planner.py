@@ -621,7 +621,7 @@ def _call_claude(client: anthropic.Anthropic, system: str, user_msg: str, max_to
     """Call Claude Haiku and return the raw text response, or None on failure."""
     try:
         response = client.messages.create(
-            model="claude-haiku-4-20250414",
+            model="claude-haiku-4-5",
             max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user_msg}],
