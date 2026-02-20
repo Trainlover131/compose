@@ -1,9 +1,10 @@
 """AI Edit Planner using Claude Haiku (with demo fallback).
 
-Three-pass LLM flow:
-  Pass 1 — main_cuts / punch_ins / captions / music  (broll + overlays empty)
-  Pass 2 — overlay anchors (word-timestamp-locked, Claude fills creative fields)
-  Pass 3 — b-roll anchors  (abstract-concept keywords, Claude fills queries)
+Four-pass LLM flow:
+  Pass 1   — main_cuts / punch_ins / captions / music  (broll + overlays empty)
+  Pass 1.5 — semantic anchor discovery from transcript + analysis + prompt
+  Pass 2   — overlay anchors (word-timestamp-locked, Claude fills creative fields)
+  Pass 3   — b-roll anchors  (abstract-concept keywords, Claude fills queries)
 """
 
 import base64
@@ -714,6 +715,219 @@ def _validate_claude_broll(
 
 
 # ===================================================================
+# Pass 1.5 — Semantic anchor discovery + deterministic locking
+# ===================================================================
+
+_ANCHOR_REQUEST_TERMS = frozenset({
+    "overlay", "overlays", "logo", "jarvis", "b-roll", "broll",
+    "cutaway", "insert", "stock footage", "pexels",
+})
+
+
+def _prompt_requests_anchors(prompt: str) -> bool:
+    """Check if user prompt mentions overlay or b-roll concepts."""
+    prompt_lower = prompt.lower()
+    return any(term in prompt_lower for term in _ANCHOR_REQUEST_TERMS)
+
+
+def _parse_anchor_candidates(raw_json: str) -> list[dict]:
+    """Parse and validate anchor candidates from Claude's raw JSON response."""
+    try:
+        data = json.loads(raw_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+    # Accept {"anchors": [...]} or [...] directly
+    if isinstance(data, dict):
+        candidates = data.get("anchors", [])
+    elif isinstance(data, list):
+        candidates = data
+    else:
+        return []
+
+    _REQUIRED = {"kind", "orig_time", "keyword"}
+    result: list[dict] = []
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        if not _REQUIRED.issubset(c):
+            continue
+        kind = c["kind"]
+        if kind not in ("overlay", "broll"):
+            continue
+        try:
+            orig_time = float(c["orig_time"])
+        except (ValueError, TypeError):
+            continue
+        conf = max(0.0, min(1.0, float(c.get("confidence", 0.5))))
+        result.append({
+            "kind": kind,
+            "orig_time": orig_time,
+            "anchor_phrase": str(c.get("anchor_phrase", "")),
+            "keyword": str(c["keyword"]),
+            "reason": str(c.get("reason", "")),
+            "confidence": conf,
+        })
+
+    result.sort(key=lambda x: x["orig_time"])
+    return result
+
+
+_PASS15_SYSTEM = (
+    "You are a video editing anchor-discovery assistant. Given a transcript, "
+    "audio emphasis data, and user editing prompt, identify semantic anchor "
+    "moments where visual overlays or b-roll cutaways should appear in the "
+    "ORIGINAL video timeline.\n\n"
+    "RULES:\n"
+    "1. Return ONLY valid JSON: {\"anchors\": [...]}.\n"
+    "2. Each anchor object: {\"kind\":\"overlay\"|\"broll\", \"orig_time\":<float>, "
+    "\"anchor_phrase\":\"<phrase from transcript or paraphrase>\", "
+    "\"keyword\":\"<concept>\", \"reason\":\"<short>\", \"confidence\":<0..1>}.\n"
+    "3. orig_time = seconds in the ORIGINAL video timeline where the concept "
+    "is mentioned or implied.\n"
+    "4. Do NOT output start/end windows — only a single orig_time per anchor.\n"
+    "5. Account for ASR errors: 'YC' may appear as 'why see', 'Y C', "
+    "'white sea', etc. Match semantically, not literally.\n"
+    "6. Brand / product / proper noun → kind \"overlay\".\n"
+    "7. Abstract concept / activity / profession → kind \"broll\".\n"
+    "8. No markdown, no explanation — ONLY the JSON object."
+)
+
+
+def _discover_anchors_with_claude(
+    client: anthropic.Anthropic,
+    transcript: dict,
+    analysis: dict,
+    prompt: str,
+    max_anchors: int = 10,
+) -> dict:
+    """Pass 1.5: Semantic anchor discovery using Claude.
+
+    Returns {"overlay": [AnchorCandidate...], "broll": [AnchorCandidate...]}.
+    """
+    empty: dict = {"overlay": [], "broll": []}
+
+    if not _prompt_requests_anchors(prompt):
+        return empty
+
+    compressed = _compress_transcript(transcript)
+    emphasis = analysis.get("emphasis_moments", [])
+    emph_summary = (
+        ", ".join(f"{m['time']:.1f}s" for m in emphasis[:15])
+        if emphasis else "none"
+    )
+
+    user_msg = (
+        f"USER EDITING PROMPT: {prompt}\n\n"
+        f"TRANSCRIPT (timestamps in seconds):\n{compressed}\n\n"
+        f"EMPHASIS MOMENTS (times): {emph_summary}\n\n"
+        f"Identify up to {max_anchors} anchor moments where the user's "
+        f"requested overlays or b-roll should appear. Return ONLY JSON."
+    )
+
+    raw = _call_claude(client, _PASS15_SYSTEM, user_msg, max_tokens=2048)
+    if not raw:
+        return empty
+
+    raw = _strip_fences(raw)
+    candidates = _parse_anchor_candidates(raw)
+
+    result: dict = {"overlay": [], "broll": []}
+    for c in candidates:
+        result[c["kind"]].append(c)
+    return result
+
+
+def _nearest_word_at_time(words: list[dict], t: float) -> Optional[dict]:
+    """Choose word whose midpoint is closest to t. Return None if no words."""
+    if not words:
+        return None
+    best = None
+    best_dist = float("inf")
+    for w in words:
+        mid = (w["start"] + w["end"]) / 2.0
+        d = abs(mid - t)
+        if d < best_dist:
+            best_dist = d
+            best = w
+    return best
+
+
+def _snap_time_to_nearest_word_or_emphasis(
+    words: list[dict],
+    emphasis_moments: list[dict],
+    t: float,
+) -> float:
+    """Snap t to nearest word start or emphasis moment time."""
+    if words:
+        w = _nearest_word_at_time(words, t)
+        if w is not None:
+            return w["start"]
+    if emphasis_moments:
+        best_t = t
+        best_dist = float("inf")
+        for m in emphasis_moments:
+            d = abs(m["time"] - t)
+            if d < best_dist:
+                best_dist = d
+                best_t = m["time"]
+        return best_t
+    return t
+
+
+def _lock_candidates_to_anchor_windows(
+    candidates: list[dict],
+    transcript: dict,
+    analysis: dict,
+    max_anchors: int,
+    win_dur_s: float,
+    pad_before: float,
+) -> list[dict]:
+    """Convert Pass 1.5 candidates into deterministic locked anchor windows."""
+    if not candidates:
+        return []
+
+    words = _extract_words(transcript)
+    emphasis = analysis.get("emphasis_moments", [])
+
+    anchors: list[dict] = []
+    used_starts: set[float] = set()
+
+    for c in candidates:
+        snapped_t = _snap_time_to_nearest_word_or_emphasis(
+            words, emphasis, c["orig_time"],
+        )
+
+        # Use nearest word text if available; otherwise keep candidate phrase
+        nearest = _nearest_word_at_time(words, snapped_t) if words else None
+        anchor_phrase = nearest["word"] if nearest else c.get("anchor_phrase", "")
+
+        keyword = _normalize_token(c.get("keyword", ""))
+        if not keyword:
+            continue
+
+        orig_start = round(max(0.0, snapped_t - pad_before), 3)
+        orig_end = round(orig_start + win_dur_s, 3)
+
+        # Deduplicate by rounded orig_start (0.1s granularity)
+        rounded = round(orig_start, 1)
+        if rounded in used_starts:
+            continue
+        used_starts.add(rounded)
+
+        anchors.append({
+            "keyword": keyword,
+            "anchor_phrase": anchor_phrase,
+            "orig_start": orig_start,
+            "orig_end": orig_end,
+        })
+
+    # Enforce non-overlap and truncate
+    anchors = _filter_nonoverlapping_anchors(anchors, min_gap_s=0.05)
+    return anchors[:max_anchors]
+
+
+# ===================================================================
 # Existing helper functions (unchanged)
 # ===================================================================
 
@@ -752,7 +966,7 @@ def plan_edit(
     preset_id: str,
     video_duration: float,
 ) -> EditPlan:
-    """Generate an EditPlan using Claude Haiku (3-pass) or demo fallback."""
+    """Generate an EditPlan using Claude Haiku (4-pass) or demo fallback."""
     if DEMO_MODE:
         logger.info("Demo mode: using rule-based planner")
         return _demo_plan(transcript, analysis, preset_id, video_duration)
@@ -846,15 +1060,43 @@ Generate the EditPlan JSON now. Remember: ONLY valid JSON, no markdown."""
         plan = _demo_plan(transcript, analysis, preset_id, video_duration)
 
     # ---------------------------------------------------------------
-    # Compute anchor windows (shared between overlay + b-roll passes)
+    # PASS 1.5:  Semantic anchor discovery + deterministic locking
     # ---------------------------------------------------------------
-    orig_anchors = _make_anchor_windows(transcript, prompt, max_anchors=8, logo_dur_s=1.2)
-    logger.info(f"Anchor windows: {len(orig_anchors)} anchors from transcript")
+    discovered = _discover_anchors_with_claude(
+        client, transcript, analysis, prompt, max_anchors=10,
+    )
+    overlay_candidates = discovered["overlay"]
+    broll_candidates = discovered["broll"]
+    logger.info(f"Pass 1.5 candidates: overlays={len(overlay_candidates)}, broll={len(broll_candidates)}")
+
+    orig_overlay_anchors = _lock_candidates_to_anchor_windows(
+        overlay_candidates, transcript, analysis,
+        max_anchors=8, win_dur_s=1.2, pad_before=0.15,
+    )
+    orig_broll_anchors = _lock_candidates_to_anchor_windows(
+        broll_candidates, transcript, analysis,
+        max_anchors=6, win_dur_s=1.6, pad_before=0.10,
+    )
+
+    # Fallback to existing deterministic methods if Pass 1.5 returned nothing
+    _wants_anchors = _prompt_requests_anchors(prompt)
+    if not orig_overlay_anchors and _wants_anchors:
+        orig_overlay_anchors = _make_anchor_windows(
+            transcript, prompt, max_anchors=8, logo_dur_s=1.2,
+        )
+    if not orig_broll_anchors and _wants_anchors:
+        _fb_anchors = orig_overlay_anchors or _make_anchor_windows(
+            transcript, prompt, max_anchors=8, logo_dur_s=1.2,
+        )
+        orig_broll_anchors = _build_broll_anchors(
+            _fb_anchors, plan.main_cuts, broll_dur_s=1.6,
+        )
+    logger.info(f"Pass 1.5 locked anchors: overlays={len(orig_overlay_anchors)}, broll={len(orig_broll_anchors)}")
 
     # ---------------------------------------------------------------
     # PASS 2:  Overlays (word-timestamp-locked)
     # ---------------------------------------------------------------
-    final_overlay_anchors = _anchors_to_final_timeline(orig_anchors, plan.main_cuts)
+    final_overlay_anchors = _anchors_to_final_timeline(orig_overlay_anchors, plan.main_cuts)
     # do NOT enforce non-overlap on anchors; enforce on overlay_items later
 
     overlay_items: list[dict] = []
@@ -906,9 +1148,8 @@ Rules:
         else:
             overlay_items = _fallback_overlays(final_overlay_anchors)
     # ---------------------------------------------------------------
-    # PASS 3:  B-roll timing lock (abstract concepts only)
+    # PASS 3:  B-roll timing lock (orig_broll_anchors from Pass 1.5)
     # ---------------------------------------------------------------
-    orig_broll_anchors = _build_broll_anchors(orig_anchors, plan.main_cuts, broll_dur_s=1.6)
     final_broll_anchors = _anchors_to_final_timeline(orig_broll_anchors, plan.main_cuts)
     
 
