@@ -682,7 +682,8 @@ def _validate_claude_overlays(
     claude_items: list[dict],
     required_anchors: list[dict],
 ) -> bool:
-    """Return True if Claude returned exactly one item per anchor with unchanged timing."""
+    """Return True if Claude returned exactly one item per anchor with unchanged timing
+    and valid placement/animation dict shapes."""
     if len(claude_items) != len(required_anchors):
         return False
     for ci, ra in zip(
@@ -693,6 +694,22 @@ def _validate_claude_overlays(
             return False
         if abs(ci.get("end", -1) - ra["end"]) > _TIMING_TOLERANCE:
             return False
+        # Validate placement is a dict with numeric x, y, w in [0, 1]
+        pl = ci.get("placement")
+        if not isinstance(pl, dict):
+            return False
+        for k in ("x", "y", "w"):
+            v = pl.get(k)
+            if not isinstance(v, (int, float)) or v < 0 or v > 1:
+                return False
+        # Validate animation is a dict with numeric fade_in, fade_out >= 0
+        an = ci.get("animation")
+        if not isinstance(an, dict):
+            return False
+        for k in ("fade_in", "fade_out"):
+            v = an.get(k)
+            if not isinstance(v, (int, float)) or v < 0:
+                return False
     return True
 
 
@@ -1125,6 +1142,8 @@ Rules:
 - brand/product/proper noun keyword => type "image_overlay", source "ai"
 - abstract concept keyword => type "video_overlay", source "pexels"
 - DO NOT change start or end values.
+- placement MUST be a JSON object with numeric keys: {{"x": <0..1>, "y": <0..1>, "w": <0..1>}}. NEVER a string like "top-right".
+- animation MUST be a JSON object with numeric keys: {{"fade_in": <float>, "fade_out": <float>}}. NEVER a string like "fade-in".
 - Return ONLY valid JSON, no markdown."""
 
         raw2 = _call_claude(client, PLANNER_SYSTEM_PROMPT, pass2_msg, max_tokens=2048)
