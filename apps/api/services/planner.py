@@ -516,13 +516,18 @@ def _build_broll_anchors(
 # NanoBanana image generation (best-effort, never breaks pipeline)
 # ===================================================================
 
+# IMPORTANT: strip whitespace/newlines so we never send a bad Bearer token.
+_NB_KEY = (NANOBANANA_API_KEY or "").strip()
+
+
 def _nanobanana_cache_key(query: str, style_hint: str, placement_w: float) -> str:
     raw = f"{query}|{style_hint}|{placement_w:.2f}|9:16"
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
+
 def _nanobanana_poll_result_url(task_id: str, timeout_s: float = 30.0) -> Optional[str]:
     """Poll NanoBanana record-info until the task completes. Return result image URL or None."""
-    if not NANOBANANA_API_KEY or not task_id:
+    if not _NB_KEY or not task_id:
         return None
 
     deadline = time.time() + timeout_s
@@ -533,80 +538,55 @@ def _nanobanana_poll_result_url(task_id: str, timeout_s: float = 30.0) -> Option
             url = f"https://api.nanobananaapi.ai/api/v1/nanobanana/record-info?taskId={task_id}"
             req = urllib.request.Request(
                 url,
-                headers={"Authorization": f"Bearer {NANOBANANA_API_KEY}"},
+                headers={
+                    "Authorization": f"Bearer {_NB_KEY}",
+                    "Accept": "application/json",
+                    "User-Agent": "compose-worker/1.0",
+                },
                 method="GET",
             )
 
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode())
 
-            # Defensive parsing
             payload = data.get("data", data) if isinstance(data, dict) else {}
             if not isinstance(payload, dict):
                 payload = {}
 
-            # Try all common URL keys
+            success_flag = payload.get("successFlag")
             result_url = (
                 payload.get("resultImageUrl")
                 or payload.get("resultImageURL")
-                or payload.get("imageUrl")
-                or payload.get("image_url")
                 or payload.get("url")
             )
 
-            success_flag = payload.get("successFlag")
-            top_level_code = data.get("code") if isinstance(data, dict) else None
-
-            # -------------------------
-            # SUCCESS CONDITION
-            # -------------------------
-            # If we have a valid URL, we consider it done.
-            if isinstance(result_url, str) and result_url.startswith("http"):
+            if success_flag == 1 and isinstance(result_url, str) and result_url.startswith("http"):
                 return result_url
 
-            # -------------------------
-            # EXPLICIT FAILURE
-            # -------------------------
-            # successFlag meanings often:
-            #   0 = processing
-            #   1 = success
-            #  -1 or 2 = failed
             if success_flag in (-1, 2):
                 last_err = f"task failed (successFlag={success_flag})"
                 break
 
-            # Some APIs signal failure via top-level code
-            if top_level_code and top_level_code not in (0, 200):
-                last_err = f"task failed (code={top_level_code})"
-                break
-
-            # -------------------------
-            # STILL PROCESSING
-            # -------------------------
             time.sleep(1.0)
 
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")[:800]
             last_err = f"HTTPError polling record-info: {e.code} body={body}"
-
-            # If auth blocked, stop immediately
             if e.code in (401, 403):
                 break
-
             time.sleep(1.0)
-
         except Exception as e:
             last_err = f"poll error: {e}"
             time.sleep(1.0)
 
     if last_err:
         logger.warning(f"NanoBanana poll failed: {last_err} (taskId={task_id})")
-
     return None
+
 
 def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> Optional[str]:
     """Generate an overlay image via NanoBanana API. Returns local path or None."""
-    if not NANOBANANA_API_KEY:
+    if not _NB_KEY:
         return None
 
     _OVERLAY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -629,7 +609,9 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {NANOBANANA_API_KEY}",
+                "Accept": "application/json",
+                "User-Agent": "compose-worker/1.0",
+                "Authorization": f"Bearer {_NB_KEY}",
             },
             method="POST",
         )
@@ -642,57 +624,59 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
             logger.warning(f"NanoBanana API HTTP {e.code}: {body}")
             return None
 
-        # Try to extract image URL or base64 from response
+        # Async path (most common): {"code":200,"msg":"success","data":{"taskId":"..."}}
+        task_id = None
+        if isinstance(data, dict):
+            task_id = data.get("taskId")
+            if not task_id and isinstance(data.get("data"), dict):
+                task_id = data["data"].get("taskId")
+
+        if task_id:
+            result_url = _nanobanana_poll_result_url(str(task_id), timeout_s=30.0)
+            if not result_url:
+                logger.warning(f"NanoBanana async task did not produce a result within timeout (taskId={task_id})")
+                return None
+
+            img_req = urllib.request.Request(
+                result_url,
+                headers={
+                    "Accept": "image/*",
+                    "User-Agent": "compose-worker/1.0",
+                    "Authorization": f"Bearer {_NB_KEY}",
+                },
+                method="GET",
+            )
+            with urllib.request.urlopen(img_req, timeout=30) as img_resp:
+                cached.write_bytes(img_resp.read())
+
+            logger.info(f"Overlay image downloaded via async poll: {cached}")
+            return str(cached)
+
+        # Fallback: try direct URL/base64 if provider ever returns it inline
         image_url = None
         image_b64 = None
 
-        # Common response shapes
         if isinstance(data, dict):
-            # Direct URL in response
             for key in ("url", "image_url", "imageUrl", "output"):
-                if key in data and isinstance(data[key], str) and data[key].startswith("http"):
+                if isinstance(data.get(key), str) and data[key].startswith("http"):
                     image_url = data[key]
                     break
-            # Check nested images array
+
             images = data.get("images", data.get("results", []))
             if isinstance(images, list) and images:
                 item = images[0]
                 if isinstance(item, str):
-                    if item.startswith("http"):
-                        image_url = item
-                    else:
-                        image_b64 = item
+                    image_url = item if item.startswith("http") else None
+                    image_b64 = None if image_url else item
                 elif isinstance(item, dict):
                     image_url = item.get("url") or item.get("image_url")
                     image_b64 = item.get("base64") or item.get("b64")
-            # Direct base64
+
             if not image_url and not image_b64:
                 image_b64 = data.get("base64") or data.get("image_base64")
 
-            # If async taskId returned, poll record-info for the result URL
-            if not image_url and not image_b64:
-                task_id = None
-                if isinstance(data, dict):
-                    # taskId may live at data["taskId"] or data["data"]["taskId"]
-                    task_id = data.get("taskId")
-                    if not task_id and isinstance(data.get("data"), dict):
-                        task_id = data["data"].get("taskId")
-
-                if task_id:
-                    result_url = _nanobanana_poll_result_url(str(task_id), timeout_s=30.0)
-                    if result_url:
-                        img_req = urllib.request.Request(result_url)
-                        with urllib.request.urlopen(img_req, timeout=30) as img_resp:
-                            cached.write_bytes(img_resp.read())
-                        logger.info(f"Overlay image downloaded via async poll: {cached}")
-                        return str(cached)
-
-                    logger.warning(f"NanoBanana async task did not produce a result within timeout (taskId={task_id})")
-                    return None
-
         if image_url:
-            img_req = urllib.request.Request(image_url)
-            with urllib.request.urlopen(img_req, timeout=30) as img_resp:
+            with urllib.request.urlopen(urllib.request.Request(image_url), timeout=30) as img_resp:
                 cached.write_bytes(img_resp.read())
             logger.info(f"Overlay image downloaded: {cached}")
             return str(cached)
@@ -702,7 +686,10 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
             logger.info(f"Overlay image decoded from base64: {cached}")
             return str(cached)
 
-        logger.warning(f"NanoBanana response had no usable image data: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+        logger.warning(
+            f"NanoBanana response had no usable image data: "
+            f"{list(data.keys()) if isinstance(data, dict) else type(data)}"
+        )
         return None
 
     except Exception as e:
@@ -1361,7 +1348,7 @@ Rules:
 
 def _generate_overlay_assets(plan: EditPlan) -> None:
     """Best-effort: generate NanoBanana images for AI-sourced overlays."""
-    if not NANOBANANA_API_KEY:
+    if not _NB_KEY:
         return
     for item in plan.overlays.items:
         if item.source == "ai" and not item.asset_path and item.query:
