@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -519,6 +520,61 @@ def _nanobanana_cache_key(query: str, style_hint: str, placement_w: float) -> st
     raw = f"{query}|{style_hint}|{placement_w:.2f}|9:16"
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
+def _nanobanana_poll_result_url(task_id: str, timeout_s: float = 30.0) -> Optional[str]:
+    """Poll NanoBanana record-info until the task completes. Return result image URL or None."""
+    if not NANOBANANA_API_KEY or not task_id:
+        return None
+
+    deadline = time.time() + timeout_s
+    last_err: Optional[str] = None
+
+    while time.time() < deadline:
+        try:
+            url = f"https://api.nanobananaapi.ai/api/v1/nanobanana/record-info?taskId={task_id}"
+            req = urllib.request.Request(
+                url,
+                headers={"Authorization": f"Bearer {NANOBANANA_API_KEY}"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+
+            # Common shapes:
+            # { "code": 200, "msg": "...", "data": { "successFlag": 1, "resultImageUrl": "..." } }
+            # or sometimes nested differently. Be defensive.
+            payload = data.get("data", data) if isinstance(data, dict) else {}
+            if not isinstance(payload, dict):
+                payload = {}
+
+            success_flag = payload.get("successFlag")
+            result_url = payload.get("resultImageUrl") or payload.get("resultImageURL") or payload.get("url")
+
+            # successFlag meanings tend to be:
+            # 0 = processing, 1 = success, -1 or 2 = failed (varies)
+            if success_flag == 1 and isinstance(result_url, str) and result_url.startswith("http"):
+                return result_url
+
+            # If explicitly failed, stop early
+            if success_flag in (-1, 2):
+                last_err = f"task failed (successFlag={success_flag})"
+                break
+
+            # Not ready yet → wait and poll again
+            time.sleep(1.0)
+
+        except urllib.error.HTTPError as e:
+            # If auth fails here, you'll see it clearly.
+            last_err = f"HTTPError polling record-info: {e.code}"
+            if e.code in (401, 403):
+                break
+            time.sleep(1.0)
+        except Exception as e:
+            last_err = f"poll error: {e}"
+            time.sleep(1.0)
+
+    if last_err:
+        logger.warning(f"NanoBanana poll failed: {last_err} (taskId={task_id})")
+    return None
 
 def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> Optional[str]:
     """Generate an overlay image via NanoBanana API. Returns local path or None."""
@@ -580,10 +636,26 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
             if not image_url and not image_b64:
                 image_b64 = data.get("base64") or data.get("image_base64")
 
-            # If only taskId returned (async), we cannot poll — leave empty
-            if not image_url and not image_b64 and "taskId" in data:
-                logger.info(f"NanoBanana returned taskId (async), skipping: {data.get('taskId')}")
-                return None
+            # If async taskId returned, poll record-info for the result URL
+            if not image_url and not image_b64:
+                task_id = None
+                if isinstance(data, dict):
+                    # taskId may live at data["taskId"] or data["data"]["taskId"]
+                    task_id = data.get("taskId")
+                    if not task_id and isinstance(data.get("data"), dict):
+                        task_id = data["data"].get("taskId")
+
+                if task_id:
+                    result_url = _nanobanana_poll_result_url(str(task_id), timeout_s=30.0)
+                    if result_url:
+                        img_req = urllib.request.Request(result_url)
+                        with urllib.request.urlopen(img_req, timeout=30) as img_resp:
+                            cached.write_bytes(img_resp.read())
+                        logger.info(f"Overlay image downloaded via async poll: {cached}")
+                        return str(cached)
+
+                    logger.warning(f"NanoBanana async task did not produce a result within timeout (taskId={task_id})")
+                    return None
 
         if image_url:
             img_req = urllib.request.Request(image_url)
