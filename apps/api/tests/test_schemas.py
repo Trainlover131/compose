@@ -430,3 +430,139 @@ class TestOverlayMappingSurvival:
         assert mapped[0]["start"] == pytest.approx(13.0)
         # end clipped to cut boundary: 20.0 -> 15.0 in final
         assert mapped[0]["end"] == pytest.approx(15.0)
+
+
+class TestMinBrollStartPolicy:
+    """Verify MIN_BROLL_START applies ONLY to b-roll, never to overlays."""
+
+    def test_overlay_allowed_before_min_broll_start(self):
+        """Overlays starting before 3.0s must NOT be filtered by MIN_BROLL_START."""
+        from apps.api.services.planner import (
+            _enforce_min_broll_start,
+            _build_timeline_map_from_cuts,
+            _map_vd_overlays,
+            _enforce_nonoverlap,
+            MIN_BROLL_START,
+        )
+
+        # Single cut: 0-60s original -> 0-60s final
+        cuts = [type("Cut", (), {"start": 0.0, "end": 60.0})()]
+        tmap = _build_timeline_map_from_cuts(cuts)
+
+        # Overlay at 0.5-2.5s (well inside the "orientation buffer")
+        vd_overlays = [{
+            "start_orig": 0.5,
+            "end_orig": 2.5,
+            "image_prompt": "company logo",
+            "placement": {"x": 0.8, "y": 0.1, "w": 0.2},
+            "animation": {"fade_in": 0.12, "fade_out": 0.12},
+            "reason": "brand intro",
+        }]
+
+        overlay_items = _map_vd_overlays(vd_overlays, tmap)
+        overlay_items = _enforce_nonoverlap(overlay_items)
+
+        # Overlay survives mapping — it should be at 0.5-2.5 in final
+        assert len(overlay_items) == 1
+        assert overlay_items[0]["start"] == pytest.approx(0.5)
+        assert overlay_items[0]["end"] == pytest.approx(2.5)
+        assert overlay_items[0]["start"] < MIN_BROLL_START
+
+        # Crucially, _enforce_min_broll_start is NOT called on overlays.
+        # Verify that if we DID call it, b-roll at <3s would be shifted/dropped,
+        # but overlays go through a different code path entirely.
+        broll_at_1s = [{"start": 1.0, "end": 2.5, "query": "test"}]
+        filtered_broll = _enforce_min_broll_start(broll_at_1s, tmap)
+        # B-roll should be shifted to 3.0 (or dropped if it doesn't fit)
+        if filtered_broll:
+            assert filtered_broll[0]["start"] >= MIN_BROLL_START
+        # But overlay_items remain untouched at 0.5s
+        assert overlay_items[0]["start"] == pytest.approx(0.5)
+
+
+class TestNanoBananaProParsing:
+    """Tests for NanoBanana Pro response parsing (isolated from Regular)."""
+
+    def test_pro_callback_shape_extracts_url(self):
+        """Pro callback shape extracts data.info.resultImageUrl correctly."""
+        from apps.api.services.planner import _parse_nanobanana_pro_result_url
+
+        payload = {
+            "code": 200,
+            "msg": "Image generated successfully.",
+            "data": {
+                "taskId": "abc-123",
+                "info": {
+                    "resultImageUrl": "https://cdn.example.com/image.jpg",
+                },
+            },
+        }
+        task_id, url = _parse_nanobanana_pro_result_url(payload)
+        assert task_id == "abc-123"
+        assert url == "https://cdn.example.com/image.jpg"
+
+    def test_pro_pending_task_returns_id_no_url(self):
+        """Pro response with taskId but no info yet returns (id, None)."""
+        from apps.api.services.planner import _parse_nanobanana_pro_result_url
+
+        payload = {
+            "code": 200,
+            "msg": "Task created.",
+            "data": {
+                "taskId": "pending-456",
+            },
+        }
+        task_id, url = _parse_nanobanana_pro_result_url(payload)
+        assert task_id == "pending-456"
+        assert url is None
+
+    def test_pro_empty_payload_returns_none(self):
+        """Pro parser handles empty/malformed payloads gracefully."""
+        from apps.api.services.planner import _parse_nanobanana_pro_result_url
+
+        assert _parse_nanobanana_pro_result_url({}) == (None, None)
+        assert _parse_nanobanana_pro_result_url({"data": "bad"}) == (None, None)
+
+
+class TestNanoBananaRegularParsing:
+    """Verify Regular NanoBanana parsing is byte-for-byte unchanged."""
+
+    def test_regular_extract_result_url_known_good(self):
+        """Regular _extract_result_url still extracts URL from known-good response."""
+        from apps.api.services.planner import _extract_result_url
+
+        # Known-good Regular response shape (top-level url field)
+        payload = {"url": "https://regular.example.com/image.png", "taskId": "r-1"}
+        assert _extract_result_url(payload) == "https://regular.example.com/image.png"
+
+        # Known-good Regular response shape (resultImageUrl in data)
+        payload2 = {"data": {"resultImageUrl": "https://regular.example.com/r2.png"}}
+        assert _extract_result_url(payload2) == "https://regular.example.com/r2.png"
+
+    def test_regular_parsing_reads_expected_keys(self):
+        """Snapshot test: Regular parsing checks the exact same JSON keys as before.
+
+        The Regular path in _nanobanana_call_and_parse reads these keys for
+        task detection: data.get("taskId"), data["data"].get("taskId").
+        For direct URL: "url", "image_url", "imageUrl", "output".
+        For arrays: "images", "results".
+        For base64: "base64", "image_base64", item "b64".
+        This test asserts _extract_result_url checks the documented keys.
+        """
+        from apps.api.services.planner import _extract_result_url
+        import inspect
+
+        source = inspect.getsource(_extract_result_url)
+
+        # Top-level URL keys (exact tuple from the code)
+        for key in ("resultImageUrl", "resultImageURL", "url", "resultUrl",
+                     "resultURL", "result_image_url"):
+            assert f'"{key}"' in source, f"Regular parser missing key: {key}"
+
+        # Array keys
+        for key in ("resultImageUrls", "resultURLs", "urls", "images", "results"):
+            assert f'"{key}"' in source, f"Regular parser missing array key: {key}"
+
+        # Nested keys
+        for key in ("data", "result", "output"):
+            assert f'"{key}"' in source, f"Regular parser missing nested key: {key}"

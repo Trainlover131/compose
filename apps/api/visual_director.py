@@ -124,12 +124,14 @@ Do NOT place items at arbitrary round-number times. Use the word_timings above.
 - Bad:  speaker says "we built a factory" → query: "abstract growth metaphor light rays"
 - Avoid abstract, surreal, or metaphorical stock footage UNLESS the user prompt explicitly requests it (e.g. "make it dreamy", "add surreal visuals").
 - Each b-roll should last 1.0–3.0 seconds.
+- IMPORTANT: If the user editing prompt mentions or requests b-roll (e.g. "add b-roll of …", "include b-roll", "cutaway"), you MUST return at least 2 b-roll items unless the transcript is too short or lacks suitable anchor moments. If you return 0 b-roll despite the user requesting it, you MUST add a top-level "broll_skip_reason" string explaining why (e.g. "transcript too short for meaningful b-roll").
 
 === OVERLAY RULES ===
 - image_prompt should be a concise, descriptive prompt for AI image generation.
 - Each overlay should last 0.8–2.0 seconds.
 - placement: x,y = position (0=left/top, 1=right/bottom), w = width fraction. Common: top-right corner = {{"x":0.78,"y":0.08,"w":0.20}}.
 - animation: fade_in and fade_out in seconds (typically 0.1–0.3s).
+- IMPORTANT: In the "reason" field, always include a verbatim anchor quote from the transcript. The start_orig and end_orig MUST wrap that quoted segment with 0.2–0.6s of padding on each side.
 
 === GENERAL ===
 - Use ORIGINAL video timestamps (seconds).
