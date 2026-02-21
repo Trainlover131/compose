@@ -218,6 +218,14 @@ def _enforce_min_broll_start(
 ) -> list[dict]:
     """Drop or shift b-roll inserts that start before *min_start* in the final timeline.
 
+    POLICY: MIN_BROLL_START applies ONLY to b-roll inserts.
+            Overlays are explicitly allowed at any time including [0.0, 3.0).
+            This function must NEVER be called on overlay items.
+
+    Called AFTER:
+      (a) mapping orig->final timeline, AND
+      (b) non-overlap shifting.
+
     Preserves original order.  For each insert starting before min_start:
       - Shift forward so start == min_start (preserve duration).
       - After shifting, verify the insert's entire span still fits inside at
@@ -1086,6 +1094,8 @@ def plan_edit(
                 overlay_items = _map_vd_overlays(vd_overlays, tmap)
                 _log_mapping_examples("overlay", vd_overlays, overlay_items)
                 overlay_items = _enforce_nonoverlap(overlay_items)
+                # NOTE: MIN_BROLL_START is NOT applied to overlays.
+                # Overlays are explicitly allowed at any time including [0.0, 3.0).
                 logger.info(
                     "VisualDirector overlays after mapping+nonoverlap: %d",
                     len(overlay_items),

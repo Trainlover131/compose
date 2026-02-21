@@ -430,3 +430,51 @@ class TestOverlayMappingSurvival:
         assert mapped[0]["start"] == pytest.approx(13.0)
         # end clipped to cut boundary: 20.0 -> 15.0 in final
         assert mapped[0]["end"] == pytest.approx(15.0)
+
+
+class TestMinBrollStartPolicy:
+    """Verify MIN_BROLL_START applies ONLY to b-roll, never to overlays."""
+
+    def test_overlay_allowed_before_min_broll_start(self):
+        """Overlays starting before 3.0s must NOT be filtered by MIN_BROLL_START."""
+        from apps.api.services.planner import (
+            _enforce_min_broll_start,
+            _build_timeline_map_from_cuts,
+            _map_vd_overlays,
+            _enforce_nonoverlap,
+            MIN_BROLL_START,
+        )
+
+        # Single cut: 0-60s original -> 0-60s final
+        cuts = [type("Cut", (), {"start": 0.0, "end": 60.0})()]
+        tmap = _build_timeline_map_from_cuts(cuts)
+
+        # Overlay at 0.5-2.5s (well inside the "orientation buffer")
+        vd_overlays = [{
+            "start_orig": 0.5,
+            "end_orig": 2.5,
+            "image_prompt": "company logo",
+            "placement": {"x": 0.8, "y": 0.1, "w": 0.2},
+            "animation": {"fade_in": 0.12, "fade_out": 0.12},
+            "reason": "brand intro",
+        }]
+
+        overlay_items = _map_vd_overlays(vd_overlays, tmap)
+        overlay_items = _enforce_nonoverlap(overlay_items)
+
+        # Overlay survives mapping — it should be at 0.5-2.5 in final
+        assert len(overlay_items) == 1
+        assert overlay_items[0]["start"] == pytest.approx(0.5)
+        assert overlay_items[0]["end"] == pytest.approx(2.5)
+        assert overlay_items[0]["start"] < MIN_BROLL_START
+
+        # Crucially, _enforce_min_broll_start is NOT called on overlays.
+        # Verify that if we DID call it, b-roll at <3s would be shifted/dropped,
+        # but overlays go through a different code path entirely.
+        broll_at_1s = [{"start": 1.0, "end": 2.5, "query": "test"}]
+        filtered_broll = _enforce_min_broll_start(broll_at_1s, tmap)
+        # B-roll should be shifted to 3.0 (or dropped if it doesn't fit)
+        if filtered_broll:
+            assert filtered_broll[0]["start"] >= MIN_BROLL_START
+        # But overlay_items remain untouched at 0.5s
+        assert overlay_items[0]["start"] == pytest.approx(0.5)
