@@ -592,7 +592,7 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
         payload = json.dumps({
             "prompt": query,
             "numImages": 1,
-            "type": "TEXTTOIMAGE",
+            "type": "TEXTTOIAMGE",
             "image_size": "9:16",
         }).encode()
 
