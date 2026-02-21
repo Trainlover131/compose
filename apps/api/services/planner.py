@@ -627,7 +627,7 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=150) as resp:
                 data = json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")[:800]
@@ -656,7 +656,7 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
                 },
                 method="GET",
             )
-            with urllib.request.urlopen(img_req, timeout=30) as img_resp:
+            with urllib.request.urlopen(img_req, timeout=150) as img_resp:
                 cached.write_bytes(img_resp.read())
 
             logger.info(f"Overlay image downloaded via async poll: {cached}")
@@ -686,7 +686,7 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
                 image_b64 = data.get("base64") or data.get("image_base64")
 
         if image_url:
-            with urllib.request.urlopen(urllib.request.Request(image_url), timeout=30) as img_resp:
+            with urllib.request.urlopen(urllib.request.Request(image_url), timeout=150) as img_resp:
                 cached.write_bytes(img_resp.read())
             logger.info(f"Overlay image downloaded: {cached}")
             return str(cached)
