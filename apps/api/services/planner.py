@@ -262,6 +262,108 @@ def _enforce_min_broll_start(
 
 _NB_KEY = (NANOBANANA_API_KEY or "").strip()
 
+_NB_ENDPOINT_REGULAR = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate"
+_NB_ENDPOINT_PRO = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate-pro"
+
+
+# ===================================================================
+# NanoBananaPromptBuilder — compile overlay fields into a generation prompt
+# ===================================================================
+
+class NanoBananaPromptBuilder:
+    """Compile VisualDirector overlay fields into a NanoBanana image prompt.
+
+    Not template-based: Gemini's creative fields (intent, style_notes,
+    must_include, must_avoid) are appended verbatim.  Only universal
+    invariants (transparency, crisp edges, text legibility) are injected.
+    """
+
+    @staticmethod
+    def build(overlay: dict) -> str:
+        """Build the final NanoBanana prompt string from an overlay dict."""
+        parts: list[str] = []
+
+        ri = overlay.get("render_intent", {})
+        wants_transparency = ri.get("wants_transparency", True)
+        has_text = ri.get("has_text", False)
+        text_value = overlay.get("text")
+
+        # Universal invariants
+        if wants_transparency:
+            parts.append(
+                "Transparent background PNG. "
+                "Crisp vector-clean edges, tight bounding box around subject, "
+                "centered composition."
+            )
+        else:
+            parts.append(
+                "Crisp vector-clean edges, tight bounding box around subject, "
+                "centered composition."
+            )
+
+        parts.append("No photorealism unless explicitly requested.")
+
+        # Text invariants
+        if has_text or text_value:
+            parts.append(
+                "TEXT REQUIREMENTS: Bold filled glyphs and shapes — "
+                "NOT outline-only. High legibility at small size. "
+                "Avoid thin outline typography."
+            )
+            if text_value:
+                parts.append(f'Text to render: "{text_value}"')
+
+        # Gemini creative fields (verbatim)
+        intent = overlay.get("intent", "")
+        if intent:
+            parts.append(f"Intent: {intent}")
+
+        style_notes = overlay.get("style_notes")
+        if style_notes:
+            parts.append(f"Style: {style_notes}")
+
+        must_include = overlay.get("must_include", [])
+        if must_include:
+            parts.append(f"Must include: {', '.join(must_include)}")
+
+        must_avoid = overlay.get("must_avoid", [])
+        if must_avoid:
+            parts.append(f"Must avoid: {', '.join(must_avoid)}")
+
+        # Base image prompt from Gemini
+        image_prompt = overlay.get("query", "") or overlay.get("image_prompt", "")
+        if image_prompt:
+            parts.append(image_prompt)
+
+        return " | ".join(parts)
+
+    @staticmethod
+    def select_endpoint(overlay: dict) -> str:
+        """Select NanoBanana Pro or Regular endpoint based on render_intent.
+
+        Pro is used when:
+          - render_intent.requires_high_fidelity_text == true, OR
+          - render_intent.has_text == true
+        Otherwise Regular.
+        """
+        ri = overlay.get("render_intent", {})
+        if ri.get("requires_high_fidelity_text") or ri.get("has_text"):
+            return _NB_ENDPOINT_PRO
+        return _NB_ENDPOINT_REGULAR
+
+    @staticmethod
+    def cache_key(overlay: dict) -> str:
+        """Deterministic cache key from the compiled prompt + placement."""
+        prompt = NanoBananaPromptBuilder.build(overlay)
+        pw = 0.0
+        pl = overlay.get("placement", {})
+        if isinstance(pl, dict):
+            pw = pl.get("w", 0.0)
+        elif hasattr(pl, "w"):
+            pw = pl.w
+        raw = f"{prompt}|{pw:.2f}|9:16"
+        return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
 
 def _nanobanana_cache_key(query: str, style_hint: str, placement_w: float) -> str:
     raw = f"{query}|{style_hint}|{placement_w:.2f}|9:16"
@@ -399,30 +501,41 @@ def _nanobanana_poll_result_url(
     return None
 
 
-def _generate_overlay_image(
-    query: str, style_hint: str, placement_w: float,
-) -> Optional[str]:
-    """Generate an overlay image via NanoBanana API. Returns local path or None."""
+def _generate_overlay_image_from_item(overlay: dict) -> Optional[str]:
+    """Generate overlay image using NanoBananaPromptBuilder. Returns path or None."""
     if not _NB_KEY:
         return None
 
     _OVERLAY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_key = _nanobanana_cache_key(query, style_hint, placement_w)
+    cache_key = NanoBananaPromptBuilder.cache_key(overlay)
     cached = _OVERLAY_CACHE_DIR / f"{cache_key}.png"
     if cached.exists():
         logger.info("Overlay cache hit: %s", cached)
         return str(cached)
 
+    compiled_prompt = NanoBananaPromptBuilder.build(overlay)
+    endpoint = NanoBananaPromptBuilder.select_endpoint(overlay)
+
+    ri = overlay.get("render_intent", {})
+    logger.info(
+        "NanoBanana routing: endpoint=%s profile=%s has_text=%s "
+        "requires_hf_text=%s",
+        "Pro" if endpoint == _NB_ENDPOINT_PRO else "Regular",
+        ri.get("profile", "?"),
+        ri.get("has_text", False),
+        ri.get("requires_high_fidelity_text", False),
+    )
+
     try:
         payload = json.dumps({
-            "prompt": query,
+            "prompt": compiled_prompt,
             "numImages": 1,
             "type": "TEXTTOIAMGE",
             "image_size": "9:16",
         }).encode()
 
         req = urllib.request.Request(
-            "https://api.nanobananaapi.ai/api/v1/nanobanana/generate",
+            endpoint,
             data=payload,
             headers={
                 "Content-Type": "application/json",
@@ -611,10 +724,16 @@ def _map_vd_overlays(
             "keyword": "",
             "query": ov["image_prompt"],
             "source": "ai",
-            "style_hint": "logo",
+            "style_hint": "",
             "placement": ov["placement"],
             "animation": ov["animation"],
             "notes": ov.get("reason", ""),
+            "intent": ov.get("intent", ""),
+            "style_notes": ov.get("style_notes"),
+            "must_include": ov.get("must_include", []),
+            "must_avoid": ov.get("must_avoid", []),
+            "text": ov.get("text"),
+            "render_intent": ov.get("render_intent", {}),
         })
     return mapped
 
@@ -855,9 +974,8 @@ def _generate_overlay_assets(plan: EditPlan) -> None:
         return
     for item in plan.overlays.items:
         if item.source == "ai" and not item.asset_path and item.query:
-            path = _generate_overlay_image(
-                item.query, item.style_hint, item.placement.w,
-            )
+            overlay_dict = item.model_dump()
+            path = _generate_overlay_image_from_item(overlay_dict)
             if path:
                 item.asset_path = path
 

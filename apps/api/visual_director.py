@@ -46,15 +46,26 @@ _OUTPUT_SCHEMA = """{
       "image_prompt": "<string: concise image generation prompt>",
       "placement": {"x": <0..1>, "y": <0..1>, "w": <0..1>},
       "animation": {"fade_in": <float seconds>, "fade_out": <float seconds>},
-      "reason": "<string: why this overlay here>"
+      "reason": "<string: anchor quote + rationale>",
+      "intent": "<string: freeform creative intent, e.g. 'show the YC logo as a badge'>",
+      "style_notes": "<string|null: optional style guidance>",
+      "must_include": ["<string: element that MUST appear>"],
+      "must_avoid": ["<string: element to avoid>"],
+      "text": "<string|null: text to render on the overlay, or null>",
+      "render_intent": {
+        "profile": "<string: freeform label you invent, e.g. logo_badge, text_badge, ui_panel, diagram, icon_graphic, etc.>",
+        "has_text": <bool: whether the overlay must contain readable text>,
+        "requires_high_fidelity_text": <bool: whether small-size legibility/typography precision is critical>,
+        "wants_transparency": <bool: default true; overlays should almost always be transparent PNG>
+      }
     }
   ],
   "broll": [
     {
       "start_orig": <float>,
       "end_orig": <float>,
-      "query": "<string: Pexels search terms>",
-      "reason": "<string: why this b-roll here>"
+      "query": "<string: Pexels search terms — literal documentary footage>",
+      "reason": "<string: anchor quote + rationale>"
     }
   ]
 }"""
@@ -376,6 +387,34 @@ class VisualDirector:
 
         reason = str(ov.get("reason", ""))
 
+        # Creative fields (all optional, with safe defaults)
+        intent = str(ov.get("intent", "")).strip()
+        style_notes = ov.get("style_notes")
+        if style_notes is not None:
+            style_notes = str(style_notes).strip() or None
+        must_include = ov.get("must_include", [])
+        if not isinstance(must_include, list):
+            must_include = []
+        must_include = [str(x).strip() for x in must_include if str(x).strip()]
+        must_avoid = ov.get("must_avoid", [])
+        if not isinstance(must_avoid, list):
+            must_avoid = []
+        must_avoid = [str(x).strip() for x in must_avoid if str(x).strip()]
+        text = ov.get("text")
+        if text is not None:
+            text = str(text).strip() or None
+
+        # render_intent (with safe defaults)
+        ri_raw = ov.get("render_intent", {})
+        if not isinstance(ri_raw, dict):
+            ri_raw = {}
+        render_intent = {
+            "profile": str(ri_raw.get("profile", "graphic")).strip(),
+            "has_text": bool(ri_raw.get("has_text", text is not None)),
+            "requires_high_fidelity_text": bool(ri_raw.get("requires_high_fidelity_text", False)),
+            "wants_transparency": bool(ri_raw.get("wants_transparency", True)),
+        }
+
         return {
             "start_orig": round(start, 3),
             "end_orig": round(end, 3),
@@ -383,6 +422,12 @@ class VisualDirector:
             "placement": {"x": round(px, 3), "y": round(py, 3), "w": round(pw, 3)},
             "animation": {"fade_in": round(fade_in, 3), "fade_out": round(fade_out, 3)},
             "reason": reason,
+            "intent": intent,
+            "style_notes": style_notes,
+            "must_include": must_include,
+            "must_avoid": must_avoid,
+            "text": text,
+            "render_intent": render_intent,
         }
 
     def _validate_broll(self, br: dict) -> Optional[dict]:
