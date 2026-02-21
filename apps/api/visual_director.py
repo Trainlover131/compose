@@ -356,37 +356,6 @@ class VisualDirector:
         if end <= start or (end - start) < 0.15:
             return None
 
-        image_prompt = ov.get("image_prompt", "")
-        if not isinstance(image_prompt, str) or not image_prompt.strip():
-            return None
-
-        # Validate placement
-        pl = ov.get("placement")
-        if not isinstance(pl, dict):
-            return None
-        try:
-            px = float(pl.get("x", -1))
-            py = float(pl.get("y", -1))
-            pw = float(pl.get("w", -1))
-        except (ValueError, TypeError):
-            return None
-        if not (0 <= px <= 1 and 0 <= py <= 1 and 0 <= pw <= 1):
-            return None
-
-        # Validate animation
-        an = ov.get("animation")
-        if not isinstance(an, dict):
-            return None
-        try:
-            fade_in = float(an.get("fade_in", -1))
-            fade_out = float(an.get("fade_out", -1))
-        except (ValueError, TypeError):
-            return None
-        if fade_in < 0 or fade_out < 0:
-            return None
-
-        reason = str(ov.get("reason", ""))
-
         # Creative fields (all optional, with safe defaults)
         intent = str(ov.get("intent", "")).strip()
         style_notes = ov.get("style_notes")
@@ -404,6 +373,43 @@ class VisualDirector:
         if text is not None:
             text = str(text).strip() or None
 
+        # image_prompt: accept if present, else allow intent-based overlays
+        image_prompt = ov.get("image_prompt", "")
+        if not isinstance(image_prompt, str):
+            image_prompt = ""
+        image_prompt = image_prompt.strip()
+        if not image_prompt:
+            # Allow overlay to survive if it has any creative field
+            has_creative = bool(intent or text or style_notes or must_include)
+            if not has_creative:
+                return None
+
+        # Validate placement (default to top-right corner if missing)
+        pl = ov.get("placement")
+        if not isinstance(pl, dict):
+            pl = {}
+        try:
+            px = float(pl.get("x", 0.82))
+            py = float(pl.get("y", 0.12))
+            pw = float(pl.get("w", 0.18))
+        except (ValueError, TypeError):
+            px, py, pw = 0.82, 0.12, 0.18
+        px = max(0.0, min(1.0, px))
+        py = max(0.0, min(1.0, py))
+        pw = max(0.0, min(1.0, pw))
+
+        # Validate animation (default to 0.12s fades if missing)
+        an = ov.get("animation")
+        if not isinstance(an, dict):
+            an = {}
+        try:
+            fade_in = max(0.0, float(an.get("fade_in", 0.12)))
+            fade_out = max(0.0, float(an.get("fade_out", 0.12)))
+        except (ValueError, TypeError):
+            fade_in, fade_out = 0.12, 0.12
+
+        reason = str(ov.get("reason", ""))
+
         # render_intent (with safe defaults)
         ri_raw = ov.get("render_intent", {})
         if not isinstance(ri_raw, dict):
@@ -418,7 +424,7 @@ class VisualDirector:
         return {
             "start_orig": round(start, 3),
             "end_orig": round(end, 3),
-            "image_prompt": image_prompt.strip(),
+            "image_prompt": image_prompt,
             "placement": {"x": round(px, 3), "y": round(py, 3), "w": round(pw, 3)},
             "animation": {"fade_in": round(fade_in, 3), "fade_out": round(fade_out, 3)},
             "reason": reason,
