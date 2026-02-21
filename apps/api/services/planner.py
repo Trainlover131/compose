@@ -30,6 +30,11 @@ from apps.api.models.schemas import EditPlan
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Scheduling constants
+# ---------------------------------------------------------------------------
+MIN_BROLL_START = 3.0  # seconds — orientation buffer at start of final video
+
+# ---------------------------------------------------------------------------
 # Overlay cache directory
 # ---------------------------------------------------------------------------
 _OVERLAY_CACHE_DIR = (
@@ -203,6 +208,52 @@ def _enforce_nonoverlap(
                 prev["end"] = round(prev["start"] + 0.1, 3)
 
     return items
+
+
+def _enforce_min_broll_start(
+    broll_inserts: list[dict],
+    timeline_map: list[dict],
+    min_start: float = MIN_BROLL_START,
+) -> list[dict]:
+    """Drop or shift b-roll inserts that start before *min_start* in the final timeline.
+
+    Preserves original order.  For each insert starting before min_start:
+      - Shift forward so start == min_start (preserve duration).
+      - After shifting, verify the insert's entire span still fits inside at
+        least one cut segment (from timeline_map final_start/final_end).
+      - If it doesn't fit, drop the insert.
+    """
+    if not broll_inserts:
+        return broll_inserts
+
+    result: list[dict] = []
+    for br in broll_inserts:
+        s, e = br["start"], br["end"]
+        dur = e - s
+
+        if s < min_start:
+            s = min_start
+            e = round(s + dur, 3)
+
+            # Check the shifted span fits inside at least one cut segment
+            fits = False
+            for seg in timeline_map:
+                if seg["final_start"] <= s and e <= seg["final_end"] + 0.01:
+                    fits = True
+                    break
+            if not fits:
+                logger.info(
+                    "Dropped b-roll starting before %.1fs: "
+                    "shifted %.3f-%.3f doesn't fit any cut segment",
+                    min_start, s, e,
+                )
+                continue
+
+            br = dict(br, start=round(s, 3), end=round(e, 3))
+
+        result.append(br)
+
+    return result
 
 
 # ===================================================================
@@ -752,9 +803,12 @@ def plan_edit(
                 broll_inserts = _map_vd_broll(vd_broll, tmap)
                 _log_mapping_examples("broll", vd_broll, broll_inserts)
                 broll_inserts = _enforce_nonoverlap(broll_inserts)
+                pre_count = len(broll_inserts)
+                broll_inserts = _enforce_min_broll_start(broll_inserts, tmap)
                 logger.info(
-                    "VisualDirector broll after mapping+nonoverlap: %d",
-                    len(broll_inserts),
+                    "VisualDirector broll after mapping+nonoverlap: %d, "
+                    "after min-start filter: %d",
+                    pre_count, len(broll_inserts),
                 )
 
         except Exception as e:
