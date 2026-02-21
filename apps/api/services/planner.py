@@ -536,44 +536,72 @@ def _nanobanana_poll_result_url(task_id: str, timeout_s: float = 30.0) -> Option
                 headers={"Authorization": f"Bearer {NANOBANANA_API_KEY}"},
                 method="GET",
             )
+
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode())
 
-            # Common shapes:
-            # { "code": 200, "msg": "...", "data": { "successFlag": 1, "resultImageUrl": "..." } }
-            # or sometimes nested differently. Be defensive.
+            # Defensive parsing
             payload = data.get("data", data) if isinstance(data, dict) else {}
             if not isinstance(payload, dict):
                 payload = {}
 
-            success_flag = payload.get("successFlag")
-            result_url = payload.get("resultImageUrl") or payload.get("resultImageURL") or payload.get("url")
+            # Try all common URL keys
+            result_url = (
+                payload.get("resultImageUrl")
+                or payload.get("resultImageURL")
+                or payload.get("imageUrl")
+                or payload.get("image_url")
+                or payload.get("url")
+            )
 
-            # successFlag meanings tend to be:
-            # 0 = processing, 1 = success, -1 or 2 = failed (varies)
-            if success_flag == 1 and isinstance(result_url, str) and result_url.startswith("http"):
+            success_flag = payload.get("successFlag")
+            top_level_code = data.get("code") if isinstance(data, dict) else None
+
+            # -------------------------
+            # SUCCESS CONDITION
+            # -------------------------
+            # If we have a valid URL, we consider it done.
+            if isinstance(result_url, str) and result_url.startswith("http"):
                 return result_url
 
-            # If explicitly failed, stop early
+            # -------------------------
+            # EXPLICIT FAILURE
+            # -------------------------
+            # successFlag meanings often:
+            #   0 = processing
+            #   1 = success
+            #  -1 or 2 = failed
             if success_flag in (-1, 2):
                 last_err = f"task failed (successFlag={success_flag})"
                 break
 
-            # Not ready yet → wait and poll again
+            # Some APIs signal failure via top-level code
+            if top_level_code and top_level_code not in (0, 200):
+                last_err = f"task failed (code={top_level_code})"
+                break
+
+            # -------------------------
+            # STILL PROCESSING
+            # -------------------------
             time.sleep(1.0)
 
         except urllib.error.HTTPError as e:
-            # If auth fails here, you'll see it clearly.
-            last_err = f"HTTPError polling record-info: {e.code}"
+            body = e.read().decode("utf-8", errors="replace")[:800]
+            last_err = f"HTTPError polling record-info: {e.code} body={body}"
+
+            # If auth blocked, stop immediately
             if e.code in (401, 403):
                 break
+
             time.sleep(1.0)
+
         except Exception as e:
             last_err = f"poll error: {e}"
             time.sleep(1.0)
 
     if last_err:
         logger.warning(f"NanoBanana poll failed: {last_err} (taskId={task_id})")
+
     return None
 
 def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> Optional[str]:
