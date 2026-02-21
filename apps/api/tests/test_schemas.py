@@ -366,3 +366,67 @@ class TestExtractOverlayTimes:
         assert reason is None
         assert s == 1.0
         assert e == 3.0
+
+
+class TestOverlayMappingSurvival:
+    """Tests that overlays survive _map_vd_overlays with various field combos."""
+
+    def test_intent_only_overlay_survives_mapping(self):
+        """Overlay with intent/style_notes but NO image_prompt survives mapping."""
+        from apps.api.services.planner import _map_vd_overlays, _build_timeline_map_from_cuts
+
+        # Single cut covering 0-60s original -> 0-60s final
+        cuts = [type("Cut", (), {"start": 0.0, "end": 60.0})()]
+        tmap = _build_timeline_map_from_cuts(cuts)
+
+        overlays = [{
+            "start_orig": 10.0,
+            "end_orig": 12.0,
+            # No image_prompt
+            "intent": "Show the YC logo as a badge",
+            "style_notes": "flat design, orange background",
+            "text": "YC",
+            "must_include": ["YC logo"],
+            "must_avoid": [],
+            "placement": {"x": 0.8, "y": 0.1, "w": 0.2},
+            "animation": {"fade_in": 0.2, "fade_out": 0.2},
+            "reason": "anchor: we got into Y Combinator",
+            "render_intent": {
+                "profile": "logo_badge",
+                "has_text": True,
+                "requires_high_fidelity_text": False,
+                "wants_transparency": True,
+            },
+        }]
+
+        mapped = _map_vd_overlays(overlays, tmap)
+        assert len(mapped) == 1
+        assert mapped[0]["start"] == pytest.approx(10.0)
+        assert mapped[0]["end"] == pytest.approx(12.0)
+        assert mapped[0]["intent"] == "Show the YC logo as a badge"
+        # query should default to empty string when image_prompt missing
+        assert mapped[0]["query"] == ""
+
+    def test_overlay_clipped_to_cut_boundary(self):
+        """Overlay spanning a cut boundary is clipped, not dropped."""
+        from apps.api.services.planner import _map_vd_overlays, _build_timeline_map_from_cuts
+
+        # Cut covers 5-20s only
+        cuts = [type("Cut", (), {"start": 5.0, "end": 20.0})()]
+        tmap = _build_timeline_map_from_cuts(cuts)
+
+        overlays = [{
+            "start_orig": 18.0,
+            "end_orig": 25.0,  # extends past cut boundary
+            "image_prompt": "factory assembly line",
+            "placement": {"x": 0.5, "y": 0.5, "w": 0.3},
+            "animation": {"fade_in": 0.15, "fade_out": 0.15},
+            "reason": "test",
+        }]
+
+        mapped = _map_vd_overlays(overlays, tmap)
+        assert len(mapped) == 1
+        # start at 18.0 -> 13.0 in final (18-5=13)
+        assert mapped[0]["start"] == pytest.approx(13.0)
+        # end clipped to cut boundary: 20.0 -> 15.0 in final
+        assert mapped[0]["end"] == pytest.approx(15.0)

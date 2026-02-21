@@ -756,17 +756,29 @@ def _log_overlay_drop_diagnostics(
     mapped_end: Optional[float],
     drop_reason: Optional[str],
 ) -> None:
-    """Log compact diagnostics for a single raw overlay (first 3 only)."""
-    field_flags: list[str] = []
-    numeric_parts: list[str] = []
+    """Log compact INFO diagnostics for a single raw overlay (first 3 only)."""
+    # Time field presence + values
+    time_parts: list[str] = []
     for key in ("start", "end", "start_orig", "end_orig"):
         val = ov.get(key)
         if val is not None:
-            field_flags.append(key)
             try:
-                numeric_parts.append(f"{key}={float(val):.3f}")
+                time_parts.append(f"{key}={float(val):.3f}")
             except (ValueError, TypeError):
-                numeric_parts.append(f"{key}=NaN")
+                time_parts.append(f"{key}=NaN")
+
+    # Content field presence
+    has_flags = (
+        f"img_prompt={'Y' if ov.get('image_prompt') else 'N'} "
+        f"intent={'Y' if ov.get('intent') else 'N'} "
+        f"text={'Y' if ov.get('text') else 'N'}"
+    )
+
+    # Placement + animation
+    pl = ov.get("placement")
+    pl_str = f"pl={pl}" if isinstance(pl, dict) else "pl=MISSING"
+    an = ov.get("animation")
+    an_str = f"an={an}" if isinstance(an, dict) else "an=MISSING"
 
     mapped_str = ""
     if mapped_start is not None and mapped_end is not None:
@@ -775,11 +787,12 @@ def _log_overlay_drop_diagnostics(
         mapped_str = f" mapped=({mapped_start},{mapped_end})"
 
     status = f"drop_reason={drop_reason}" if drop_reason else "KEPT"
-    logger.debug(
-        "overlay[%d] has=(%s) %s%s %s",
+    logger.info(
+        "overlay[%d] %s | %s | %s %s%s | %s",
         idx,
-        ",".join(field_flags) or "none",
-        " ".join(numeric_parts) or "no_numeric",
+        " ".join(time_parts) or "no_times",
+        has_flags,
+        pl_str, an_str,
         mapped_str,
         status,
     )
@@ -792,7 +805,8 @@ def _map_vd_overlays(
     """Map VisualDirector overlays from original to final timeline.
 
     Backwards-compatible: prefers start_orig/end_orig, falls back to
-    start/end.  Drops items that fall entirely outside kept cuts.
+    start/end.  Clips overlays that span cut boundaries instead of
+    dropping them.  Only drops if entirely outside all cuts.
     """
     mapped: list[dict] = []
     for idx, ov in enumerate(vd_overlays):
@@ -802,6 +816,19 @@ def _map_vd_overlays(
         if not drop_reason:
             fs = _map_time(orig_s, timeline_map)
             fe = _map_time(orig_e, timeline_map)
+
+            # Clip to cut boundary when one end falls in a gap
+            if fs is not None and fe is None:
+                for entry in timeline_map:
+                    if entry["orig_start"] <= orig_s <= entry["orig_end"]:
+                        fe = entry["final_end"]
+                        break
+            elif fs is None and fe is not None:
+                for entry in timeline_map:
+                    if entry["orig_start"] <= orig_e <= entry["orig_end"]:
+                        fs = entry["final_start"]
+                        break
+
             if fs is None or fe is None:
                 drop_reason = "FAILED_TO_MAP_ORIG_TO_FINAL"
             elif fe <= fs:
@@ -1046,6 +1073,14 @@ def plan_edit(
 
             # Map original -> final timeline
             tmap = _build_timeline_map_from_cuts(plan.main_cuts)
+            logger.info(
+                "Timeline map (%d cuts): %s",
+                len(tmap),
+                ", ".join(
+                    f"orig={e['orig_start']:.1f}-{e['orig_end']:.1f}->final={e['final_start']:.1f}-{e['final_end']:.1f}"
+                    for e in tmap[:5]
+                ),
+            )
 
             if vd_overlays:
                 overlay_items = _map_vd_overlays(vd_overlays, tmap)
