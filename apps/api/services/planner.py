@@ -592,7 +592,7 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
         payload = json.dumps({
             "prompt": query,
             "numImages": 1,
-            "type": "TEXTTOIMAGE",
+            "type": "TEXTTOIAMGE",
             "image_size": "9:16",
         }).encode()
 
@@ -601,7 +601,9 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "Authorization": f"Bearer {NANOBANANA_API_KEY}",
+                "Accept": "application/json",
+                "User-Agent": "compose-worker/1.0",
+                "Authorization": f"Bearer {(NANOBANANA_API_KEY or '').strip()}",
             },
             method="POST",
         )
