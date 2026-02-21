@@ -46,15 +46,26 @@ _OUTPUT_SCHEMA = """{
       "image_prompt": "<string: concise image generation prompt>",
       "placement": {"x": <0..1>, "y": <0..1>, "w": <0..1>},
       "animation": {"fade_in": <float seconds>, "fade_out": <float seconds>},
-      "reason": "<string: why this overlay here>"
+      "reason": "<string: anchor quote + rationale>",
+      "intent": "<string: freeform creative intent, e.g. 'show the YC logo as a badge'>",
+      "style_notes": "<string|null: optional style guidance>",
+      "must_include": ["<string: element that MUST appear>"],
+      "must_avoid": ["<string: element to avoid>"],
+      "text": "<string|null: text to render on the overlay, or null>",
+      "render_intent": {
+        "profile": "<string: freeform label you invent, e.g. logo_badge, text_badge, ui_panel, diagram, icon_graphic, etc.>",
+        "has_text": <bool: whether the overlay must contain readable text>,
+        "requires_high_fidelity_text": <bool: whether small-size legibility/typography precision is critical>,
+        "wants_transparency": <bool: default true; overlays should almost always be transparent PNG>
+      }
     }
   ],
   "broll": [
     {
       "start_orig": <float>,
       "end_orig": <float>,
-      "query": "<string: Pexels search terms>",
-      "reason": "<string: why this b-roll here>"
+      "query": "<string: Pexels search terms — literal documentary footage>",
+      "reason": "<string: anchor quote + rationale>"
     }
   ]
 }"""
@@ -69,35 +80,62 @@ def _build_prompt(transcript: dict, prompt: str, video_duration: float | None = 
         if words:
             word_detail = " ".join(
                 f"{w.get('word', '')}({w.get('start', 0):.2f}-{w.get('end', 0):.2f})"
-                for w in words[:40]
+                for w in words
             )
-            transcript_lines.append(f"[{seg['start']:.1f}-{seg['end']:.1f}] {seg['text'].strip()}  words: {word_detail}")
+            transcript_lines.append(
+                f"[{seg['start']:.2f}-{seg['end']:.2f}] "
+                f"{seg['text'].strip()}\n"
+                f"  word_timings: {word_detail}"
+            )
         else:
-            transcript_lines.append(f"[{seg['start']:.1f}-{seg['end']:.1f}] {seg['text'].strip()}")
+            transcript_lines.append(
+                f"[{seg['start']:.2f}-{seg['end']:.2f}] {seg['text'].strip()}"
+            )
 
-    transcript_block = "\n".join(transcript_lines) if transcript_lines else "(no transcript available)"
+    transcript_block = (
+        "\n".join(transcript_lines) if transcript_lines
+        else "(no transcript available)"
+    )
 
     dur_line = f"\nVideo duration: {video_duration:.1f}s" if video_duration else ""
 
-    return f"""You are a Visual Director for short-form video editing. Analyze this video and propose overlays (image pop-ups) and b-roll (stock video cutaways) that would enhance viewer engagement.{dur_line}
+    return f"""You are a Visual Director for short-form video editing. Analyze this video and propose overlays (image pop-ups) and b-roll (stock video cutaways) that enhance viewer engagement.{dur_line}
 
 USER EDITING PROMPT: {prompt}
 
-TRANSCRIPT (with word-level timestamps in seconds):
+TRANSCRIPT (with per-word timestamps in seconds):
 {transcript_block}
 
-INSTRUCTIONS:
-1. First, understand what is happening visually and verbally in the video.
-2. Propose overlays and b-roll as structured JSON using ORIGINAL video timestamps (seconds).
-3. If the user prompt requests specific overlays or b-roll, include them.
-4. Even if the user does NOT request overlays/b-roll, propose helpful ones based on the video content (brands mentioned, concepts discussed, etc.).
-5. Keep overlays non-spammy: max {_MAX_OVERLAYS} overlays, max {_MAX_BROLL} b-roll inserts.
-6. Each overlay should last 0.8-2.0 seconds. Each b-roll should last 1.0-3.0 seconds.
-7. Avoid overlapping items when possible.
-8. image_prompt should be a concise, descriptive prompt for AI image generation (e.g. "minimalist Apple logo, flat design, white on transparent").
-9. query should be concise Pexels search terms for stock video.
-10. placement: x,y = position (0=left/top, 1=right/bottom), w = width fraction. Common: top-right corner = {{"x":0.78,"y":0.08,"w":0.20}}.
-11. animation: fade_in and fade_out in seconds (typically 0.1-0.3s).
+=== TIMING RULES (CRITICAL) ===
+Every overlay and every b-roll MUST be anchored to a specific quote from the transcript above.
+
+For each item you propose:
+1. Identify the exact words being spoken that motivate the overlay or b-roll.
+2. Set start_orig = (first anchor word's start timestamp) − 0.2 to 0.6s padding.
+3. Set end_orig   = (last anchor word's end timestamp)   + 0.2 to 0.6s padding.
+4. In the "reason" field, include the anchor quote verbatim.  Format:
+   "reason": "anchor: \\"<exact words>\\" — <your creative rationale>"
+
+Do NOT place items at arbitrary round-number times. Use the word_timings above.
+
+=== B-ROLL RULES ===
+- query must describe LITERAL, DOCUMENTARY footage that directly depicts the concrete nouns or actions being spoken at that moment.
+- Good: speaker says "we built a factory" → query: "factory assembly line manufacturing"
+- Bad:  speaker says "we built a factory" → query: "abstract growth metaphor light rays"
+- Avoid abstract, surreal, or metaphorical stock footage UNLESS the user prompt explicitly requests it (e.g. "make it dreamy", "add surreal visuals").
+- Each b-roll should last 1.0–3.0 seconds.
+
+=== OVERLAY RULES ===
+- image_prompt should be a concise, descriptive prompt for AI image generation.
+- Each overlay should last 0.8–2.0 seconds.
+- placement: x,y = position (0=left/top, 1=right/bottom), w = width fraction. Common: top-right corner = {{"x":0.78,"y":0.08,"w":0.20}}.
+- animation: fade_in and fade_out in seconds (typically 0.1–0.3s).
+
+=== GENERAL ===
+- Use ORIGINAL video timestamps (seconds).
+- Max {_MAX_OVERLAYS} overlays, max {_MAX_BROLL} b-roll inserts.
+- Avoid overlapping items when possible.
+- If the user prompt requests specific overlays or b-roll, include them.
 
 Return ONLY valid JSON with exactly this structure (no markdown, no commentary, no preface text):
 {_OUTPUT_SCHEMA}"""
@@ -349,6 +387,34 @@ class VisualDirector:
 
         reason = str(ov.get("reason", ""))
 
+        # Creative fields (all optional, with safe defaults)
+        intent = str(ov.get("intent", "")).strip()
+        style_notes = ov.get("style_notes")
+        if style_notes is not None:
+            style_notes = str(style_notes).strip() or None
+        must_include = ov.get("must_include", [])
+        if not isinstance(must_include, list):
+            must_include = []
+        must_include = [str(x).strip() for x in must_include if str(x).strip()]
+        must_avoid = ov.get("must_avoid", [])
+        if not isinstance(must_avoid, list):
+            must_avoid = []
+        must_avoid = [str(x).strip() for x in must_avoid if str(x).strip()]
+        text = ov.get("text")
+        if text is not None:
+            text = str(text).strip() or None
+
+        # render_intent (with safe defaults)
+        ri_raw = ov.get("render_intent", {})
+        if not isinstance(ri_raw, dict):
+            ri_raw = {}
+        render_intent = {
+            "profile": str(ri_raw.get("profile", "graphic")).strip(),
+            "has_text": bool(ri_raw.get("has_text", text is not None)),
+            "requires_high_fidelity_text": bool(ri_raw.get("requires_high_fidelity_text", False)),
+            "wants_transparency": bool(ri_raw.get("wants_transparency", True)),
+        }
+
         return {
             "start_orig": round(start, 3),
             "end_orig": round(end, 3),
@@ -356,6 +422,12 @@ class VisualDirector:
             "placement": {"x": round(px, 3), "y": round(py, 3), "w": round(pw, 3)},
             "animation": {"fade_in": round(fade_in, 3), "fade_out": round(fade_out, 3)},
             "reason": reason,
+            "intent": intent,
+            "style_notes": style_notes,
+            "must_include": must_include,
+            "must_avoid": must_avoid,
+            "text": text,
+            "render_intent": render_intent,
         }
 
     def _validate_broll(self, br: dict) -> Optional[dict]:

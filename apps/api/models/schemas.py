@@ -81,6 +81,13 @@ class OverlayAnimation(BaseModel):
     fade_out: float = 0.12
 
 
+class RenderIntent(BaseModel):
+    profile: str = "graphic"
+    has_text: bool = False
+    requires_high_fidelity_text: bool = False
+    wants_transparency: bool = True
+
+
 class OverlayItem(BaseModel):
     type: str = "image_overlay"  # "image_overlay" | "video_overlay"
     start: float
@@ -94,6 +101,13 @@ class OverlayItem(BaseModel):
     animation: OverlayAnimation = OverlayAnimation()
     notes: str = ""
     asset_path: Optional[str] = None
+    # Creative fields from VisualDirector
+    intent: str = ""
+    style_notes: Optional[str] = None
+    must_include: list[str] = []
+    must_avoid: list[str] = []
+    text: Optional[str] = None
+    render_intent: RenderIntent = RenderIntent()
 
     @field_validator("end")
     @classmethod

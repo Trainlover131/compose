@@ -30,6 +30,11 @@ from apps.api.models.schemas import EditPlan
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Scheduling constants
+# ---------------------------------------------------------------------------
+MIN_BROLL_START = 3.0  # seconds — orientation buffer at start of final video
+
+# ---------------------------------------------------------------------------
 # Overlay cache directory
 # ---------------------------------------------------------------------------
 _OVERLAY_CACHE_DIR = (
@@ -205,11 +210,159 @@ def _enforce_nonoverlap(
     return items
 
 
+def _enforce_min_broll_start(
+    broll_inserts: list[dict],
+    timeline_map: list[dict],
+    min_start: float = MIN_BROLL_START,
+) -> list[dict]:
+    """Drop or shift b-roll inserts that start before *min_start* in the final timeline.
+
+    Preserves original order.  For each insert starting before min_start:
+      - Shift forward so start == min_start (preserve duration).
+      - After shifting, verify the insert's entire span still fits inside at
+        least one cut segment (from timeline_map final_start/final_end).
+      - If it doesn't fit, drop the insert.
+    """
+    if not broll_inserts:
+        return broll_inserts
+
+    result: list[dict] = []
+    for br in broll_inserts:
+        s, e = br["start"], br["end"]
+        dur = e - s
+
+        if s < min_start:
+            s = min_start
+            e = round(s + dur, 3)
+
+            # Check the shifted span fits inside at least one cut segment
+            fits = False
+            for seg in timeline_map:
+                if seg["final_start"] <= s and e <= seg["final_end"] + 0.01:
+                    fits = True
+                    break
+            if not fits:
+                logger.info(
+                    "Dropped b-roll starting before %.1fs: "
+                    "shifted %.3f-%.3f doesn't fit any cut segment",
+                    min_start, s, e,
+                )
+                continue
+
+            br = dict(br, start=round(s, 3), end=round(e, 3))
+
+        result.append(br)
+
+    return result
+
+
 # ===================================================================
 # NanoBanana image generation (best-effort, never breaks pipeline)
 # ===================================================================
 
 _NB_KEY = (NANOBANANA_API_KEY or "").strip()
+
+_NB_ENDPOINT_REGULAR = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate"
+_NB_ENDPOINT_PRO = "https://api.nanobananaapi.ai/api/v1/nanobanana/generate-pro"
+
+
+# ===================================================================
+# NanoBananaPromptBuilder — compile overlay fields into a generation prompt
+# ===================================================================
+
+class NanoBananaPromptBuilder:
+    """Compile VisualDirector overlay fields into a NanoBanana image prompt.
+
+    Not template-based: Gemini's creative fields (intent, style_notes,
+    must_include, must_avoid) are appended verbatim.  Only universal
+    invariants (transparency, crisp edges, text legibility) are injected.
+    """
+
+    @staticmethod
+    def build(overlay: dict) -> str:
+        """Build the final NanoBanana prompt string from an overlay dict."""
+        parts: list[str] = []
+
+        ri = overlay.get("render_intent", {})
+        wants_transparency = ri.get("wants_transparency", True)
+        has_text = ri.get("has_text", False)
+        text_value = overlay.get("text")
+
+        # Universal invariants
+        if wants_transparency:
+            parts.append(
+                "Transparent background PNG. "
+                "Crisp vector-clean edges, tight bounding box around subject, "
+                "centered composition."
+            )
+        else:
+            parts.append(
+                "Crisp vector-clean edges, tight bounding box around subject, "
+                "centered composition."
+            )
+
+        parts.append("No photorealism unless explicitly requested.")
+
+        # Text invariants
+        if has_text or text_value:
+            parts.append(
+                "TEXT REQUIREMENTS: Bold filled glyphs and shapes — "
+                "NOT outline-only. High legibility at small size. "
+                "Avoid thin outline typography."
+            )
+            if text_value:
+                parts.append(f'Text to render: "{text_value}"')
+
+        # Gemini creative fields (verbatim)
+        intent = overlay.get("intent", "")
+        if intent:
+            parts.append(f"Intent: {intent}")
+
+        style_notes = overlay.get("style_notes")
+        if style_notes:
+            parts.append(f"Style: {style_notes}")
+
+        must_include = overlay.get("must_include", [])
+        if must_include:
+            parts.append(f"Must include: {', '.join(must_include)}")
+
+        must_avoid = overlay.get("must_avoid", [])
+        if must_avoid:
+            parts.append(f"Must avoid: {', '.join(must_avoid)}")
+
+        # Base image prompt from Gemini
+        image_prompt = overlay.get("query", "") or overlay.get("image_prompt", "")
+        if image_prompt:
+            parts.append(image_prompt)
+
+        return " | ".join(parts)
+
+    @staticmethod
+    def select_endpoint(overlay: dict) -> str:
+        """Select NanoBanana Pro or Regular endpoint based on render_intent.
+
+        Pro is used when:
+          - render_intent.requires_high_fidelity_text == true, OR
+          - render_intent.has_text == true
+        Otherwise Regular.
+        """
+        ri = overlay.get("render_intent", {})
+        if ri.get("requires_high_fidelity_text") or ri.get("has_text"):
+            return _NB_ENDPOINT_PRO
+        return _NB_ENDPOINT_REGULAR
+
+    @staticmethod
+    def cache_key(overlay: dict) -> str:
+        """Deterministic cache key from the compiled prompt + placement."""
+        prompt = NanoBananaPromptBuilder.build(overlay)
+        pw = 0.0
+        pl = overlay.get("placement", {})
+        if isinstance(pl, dict):
+            pw = pl.get("w", 0.0)
+        elif hasattr(pl, "w"):
+            pw = pl.w
+        raw = f"{prompt}|{pw:.2f}|9:16"
+        return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
 def _nanobanana_cache_key(query: str, style_hint: str, placement_w: float) -> str:
@@ -348,30 +501,41 @@ def _nanobanana_poll_result_url(
     return None
 
 
-def _generate_overlay_image(
-    query: str, style_hint: str, placement_w: float,
-) -> Optional[str]:
-    """Generate an overlay image via NanoBanana API. Returns local path or None."""
+def _generate_overlay_image_from_item(overlay: dict) -> Optional[str]:
+    """Generate overlay image using NanoBananaPromptBuilder. Returns path or None."""
     if not _NB_KEY:
         return None
 
     _OVERLAY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_key = _nanobanana_cache_key(query, style_hint, placement_w)
+    cache_key = NanoBananaPromptBuilder.cache_key(overlay)
     cached = _OVERLAY_CACHE_DIR / f"{cache_key}.png"
     if cached.exists():
         logger.info("Overlay cache hit: %s", cached)
         return str(cached)
 
+    compiled_prompt = NanoBananaPromptBuilder.build(overlay)
+    endpoint = NanoBananaPromptBuilder.select_endpoint(overlay)
+
+    ri = overlay.get("render_intent", {})
+    logger.info(
+        "NanoBanana routing: endpoint=%s profile=%s has_text=%s "
+        "requires_hf_text=%s",
+        "Pro" if endpoint == _NB_ENDPOINT_PRO else "Regular",
+        ri.get("profile", "?"),
+        ri.get("has_text", False),
+        ri.get("requires_high_fidelity_text", False),
+    )
+
     try:
         payload = json.dumps({
-            "prompt": query,
+            "prompt": compiled_prompt,
             "numImages": 1,
             "type": "TEXTTOIAMGE",
             "image_size": "9:16",
         }).encode()
 
         req = urllib.request.Request(
-            "https://api.nanobananaapi.ai/api/v1/nanobanana/generate",
+            endpoint,
             data=payload,
             headers={
                 "Content-Type": "application/json",
@@ -522,6 +686,24 @@ def _summarize_silences(analysis: dict) -> str:
     return f"{len(silences)} silences found:\n" + "\n".join(lines)
 
 
+def _transcript_snippet_at(transcript: dict, t: float, max_chars: int = 80) -> str:
+    """Return the transcript text closest to time *t*, truncated."""
+    best_seg = None
+    best_dist = float("inf")
+    for seg in transcript.get("segments", []):
+        mid = (seg["start"] + seg["end"]) / 2
+        dist = abs(mid - t)
+        if dist < best_dist:
+            best_dist = dist
+            best_seg = seg
+    if best_seg is None:
+        return "(no transcript)"
+    text = best_seg.get("text", "").strip()
+    if len(text) > max_chars:
+        text = text[:max_chars] + "..."
+    return f"[{best_seg['start']:.1f}s] {text}"
+
+
 def _summarize_emphasis(analysis: dict) -> str:
     moments = analysis.get("emphasis_moments", [])
     if not moments:
@@ -560,10 +742,16 @@ def _map_vd_overlays(
             "keyword": "",
             "query": ov["image_prompt"],
             "source": "ai",
-            "style_hint": "logo",
+            "style_hint": "",
             "placement": ov["placement"],
             "animation": ov["animation"],
             "notes": ov.get("reason", ""),
+            "intent": ov.get("intent", ""),
+            "style_notes": ov.get("style_notes"),
+            "must_include": ov.get("must_include", []),
+            "must_avoid": ov.get("must_avoid", []),
+            "text": ov.get("text"),
+            "render_intent": ov.get("render_intent", {}),
         })
     return mapped
 
@@ -606,6 +794,47 @@ def _log_mapping_examples(
             label, i,
             o.get("start_orig", 0), o.get("end_orig", 0),
             m["start"], m["end"],
+        )
+
+
+def _log_debug_scheduling(
+    broll_inserts: list[dict],
+    overlay_items: list[dict],
+    transcript: dict,
+) -> None:
+    """Log debug info for the first 3 b-roll inserts and overlays."""
+    for i, br in enumerate(broll_inserts[:3]):
+        snippet = _transcript_snippet_at(transcript, br["start"])
+        query = br.get("query", "")
+        if len(query) > 180:
+            query = query[:180] + "..."
+        logger.info(
+            "DEBUG broll[%d]: final=%.3f-%.3f transcript=%s query=%s",
+            i, br["start"], br["end"], snippet, query,
+        )
+
+    for i, ov in enumerate(overlay_items[:3]):
+        snippet = _transcript_snippet_at(transcript, ov["start"])
+        ri = ov.get("render_intent", {})
+        if isinstance(ri, dict):
+            has_text = ri.get("has_text", False)
+            hf_text = ri.get("requires_high_fidelity_text", False)
+            profile = ri.get("profile", "?")
+        else:
+            has_text = getattr(ri, "has_text", False)
+            hf_text = getattr(ri, "requires_high_fidelity_text", False)
+            profile = getattr(ri, "profile", "?")
+
+        use_pro = has_text or hf_text
+        prompt_str = ov.get("query", "")
+        if len(prompt_str) > 180:
+            prompt_str = prompt_str[:180] + "..."
+
+        logger.info(
+            "DEBUG overlay[%d]: final=%.3f-%.3f transcript=%s "
+            "prompt=%s endpoint=%s (profile=%s has_text=%s hf_text=%s)",
+            i, ov["start"], ov["end"], snippet, prompt_str,
+            "Pro" if use_pro else "Regular", profile, has_text, hf_text,
         )
 
 
@@ -752,9 +981,12 @@ def plan_edit(
                 broll_inserts = _map_vd_broll(vd_broll, tmap)
                 _log_mapping_examples("broll", vd_broll, broll_inserts)
                 broll_inserts = _enforce_nonoverlap(broll_inserts)
+                pre_count = len(broll_inserts)
+                broll_inserts = _enforce_min_broll_start(broll_inserts, tmap)
                 logger.info(
-                    "VisualDirector broll after mapping+nonoverlap: %d",
-                    len(broll_inserts),
+                    "VisualDirector broll after mapping+nonoverlap: %d, "
+                    "after min-start filter: %d",
+                    pre_count, len(broll_inserts),
                 )
 
         except Exception as e:
@@ -782,6 +1014,11 @@ def plan_edit(
     plan = EditPlan.model_validate(plan_dict)
 
     # ---------------------------------------------------------------
+    # Debug logging for first 3 b-roll + overlays
+    # ---------------------------------------------------------------
+    _log_debug_scheduling(broll_inserts, overlay_items, transcript)
+
+    # ---------------------------------------------------------------
     # Best-effort NanoBanana asset generation for AI overlays
     # ---------------------------------------------------------------
     if plan.overlays.enabled and plan.overlays.items:
@@ -801,9 +1038,8 @@ def _generate_overlay_assets(plan: EditPlan) -> None:
         return
     for item in plan.overlays.items:
         if item.source == "ai" and not item.asset_path and item.query:
-            path = _generate_overlay_image(
-                item.query, item.style_hint, item.placement.w,
-            )
+            overlay_dict = item.model_dump()
+            path = _generate_overlay_image_from_item(overlay_dict)
             if path:
                 item.asset_path = path
 
