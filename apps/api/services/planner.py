@@ -300,9 +300,11 @@ class NanoBananaPromptBuilder:
         # Universal invariants
         if wants_transparency:
             parts.append(
-                "Transparent background PNG. "
+                "Transparent background PNG with real alpha channel. "
                 "Crisp vector-clean edges, tight bounding box around subject, "
-                "centered composition."
+                "centered composition. "
+                "No checkerboard, no transparency grid, "
+                "no alpha preview background, no tiled background pattern."
             )
         else:
             parts.append(
