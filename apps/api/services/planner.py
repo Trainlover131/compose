@@ -686,6 +686,24 @@ def _summarize_silences(analysis: dict) -> str:
     return f"{len(silences)} silences found:\n" + "\n".join(lines)
 
 
+def _transcript_snippet_at(transcript: dict, t: float, max_chars: int = 80) -> str:
+    """Return the transcript text closest to time *t*, truncated."""
+    best_seg = None
+    best_dist = float("inf")
+    for seg in transcript.get("segments", []):
+        mid = (seg["start"] + seg["end"]) / 2
+        dist = abs(mid - t)
+        if dist < best_dist:
+            best_dist = dist
+            best_seg = seg
+    if best_seg is None:
+        return "(no transcript)"
+    text = best_seg.get("text", "").strip()
+    if len(text) > max_chars:
+        text = text[:max_chars] + "..."
+    return f"[{best_seg['start']:.1f}s] {text}"
+
+
 def _summarize_emphasis(analysis: dict) -> str:
     moments = analysis.get("emphasis_moments", [])
     if not moments:
@@ -776,6 +794,47 @@ def _log_mapping_examples(
             label, i,
             o.get("start_orig", 0), o.get("end_orig", 0),
             m["start"], m["end"],
+        )
+
+
+def _log_debug_scheduling(
+    broll_inserts: list[dict],
+    overlay_items: list[dict],
+    transcript: dict,
+) -> None:
+    """Log debug info for the first 3 b-roll inserts and overlays."""
+    for i, br in enumerate(broll_inserts[:3]):
+        snippet = _transcript_snippet_at(transcript, br["start"])
+        query = br.get("query", "")
+        if len(query) > 180:
+            query = query[:180] + "..."
+        logger.info(
+            "DEBUG broll[%d]: final=%.3f-%.3f transcript=%s query=%s",
+            i, br["start"], br["end"], snippet, query,
+        )
+
+    for i, ov in enumerate(overlay_items[:3]):
+        snippet = _transcript_snippet_at(transcript, ov["start"])
+        ri = ov.get("render_intent", {})
+        if isinstance(ri, dict):
+            has_text = ri.get("has_text", False)
+            hf_text = ri.get("requires_high_fidelity_text", False)
+            profile = ri.get("profile", "?")
+        else:
+            has_text = getattr(ri, "has_text", False)
+            hf_text = getattr(ri, "requires_high_fidelity_text", False)
+            profile = getattr(ri, "profile", "?")
+
+        use_pro = has_text or hf_text
+        prompt_str = ov.get("query", "")
+        if len(prompt_str) > 180:
+            prompt_str = prompt_str[:180] + "..."
+
+        logger.info(
+            "DEBUG overlay[%d]: final=%.3f-%.3f transcript=%s "
+            "prompt=%s endpoint=%s (profile=%s has_text=%s hf_text=%s)",
+            i, ov["start"], ov["end"], snippet, prompt_str,
+            "Pro" if use_pro else "Regular", profile, has_text, hf_text,
         )
 
 
@@ -953,6 +1012,11 @@ def plan_edit(
         }
 
     plan = EditPlan.model_validate(plan_dict)
+
+    # ---------------------------------------------------------------
+    # Debug logging for first 3 b-roll + overlays
+    # ---------------------------------------------------------------
+    _log_debug_scheduling(broll_inserts, overlay_items, transcript)
 
     # ---------------------------------------------------------------
     # Best-effort NanoBanana asset generation for AI overlays
