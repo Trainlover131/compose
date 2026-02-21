@@ -536,6 +536,14 @@ def _extract_result_url(payload: dict) -> Optional[str]:
         if isinstance(v, str) and v.startswith("http"):
             return v
 
+  
+    # ✅ NEW: NanoBanana commonly nests the URL here:
+    resp = payload.get("response")
+    if isinstance(resp, dict):
+        u = _extract_result_url(resp)
+        if u:
+            return u
+
     # List keys (list[str] or list[dict])
     for k in ("resultImageUrls", "resultURLs", "urls", "images", "results"):
         v = payload.get(k)
@@ -699,7 +707,6 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
                 headers={
                     "Accept": "image/*",
                     "User-Agent": "compose-worker/1.0",
-                    "Authorization": f"Bearer {_NB_KEY}",
                 },
                 method="GET",
             )
