@@ -69,35 +69,62 @@ def _build_prompt(transcript: dict, prompt: str, video_duration: float | None = 
         if words:
             word_detail = " ".join(
                 f"{w.get('word', '')}({w.get('start', 0):.2f}-{w.get('end', 0):.2f})"
-                for w in words[:40]
+                for w in words
             )
-            transcript_lines.append(f"[{seg['start']:.1f}-{seg['end']:.1f}] {seg['text'].strip()}  words: {word_detail}")
+            transcript_lines.append(
+                f"[{seg['start']:.2f}-{seg['end']:.2f}] "
+                f"{seg['text'].strip()}\n"
+                f"  word_timings: {word_detail}"
+            )
         else:
-            transcript_lines.append(f"[{seg['start']:.1f}-{seg['end']:.1f}] {seg['text'].strip()}")
+            transcript_lines.append(
+                f"[{seg['start']:.2f}-{seg['end']:.2f}] {seg['text'].strip()}"
+            )
 
-    transcript_block = "\n".join(transcript_lines) if transcript_lines else "(no transcript available)"
+    transcript_block = (
+        "\n".join(transcript_lines) if transcript_lines
+        else "(no transcript available)"
+    )
 
     dur_line = f"\nVideo duration: {video_duration:.1f}s" if video_duration else ""
 
-    return f"""You are a Visual Director for short-form video editing. Analyze this video and propose overlays (image pop-ups) and b-roll (stock video cutaways) that would enhance viewer engagement.{dur_line}
+    return f"""You are a Visual Director for short-form video editing. Analyze this video and propose overlays (image pop-ups) and b-roll (stock video cutaways) that enhance viewer engagement.{dur_line}
 
 USER EDITING PROMPT: {prompt}
 
-TRANSCRIPT (with word-level timestamps in seconds):
+TRANSCRIPT (with per-word timestamps in seconds):
 {transcript_block}
 
-INSTRUCTIONS:
-1. First, understand what is happening visually and verbally in the video.
-2. Propose overlays and b-roll as structured JSON using ORIGINAL video timestamps (seconds).
-3. If the user prompt requests specific overlays or b-roll, include them.
-4. Even if the user does NOT request overlays/b-roll, propose helpful ones based on the video content (brands mentioned, concepts discussed, etc.).
-5. Keep overlays non-spammy: max {_MAX_OVERLAYS} overlays, max {_MAX_BROLL} b-roll inserts.
-6. Each overlay should last 0.8-2.0 seconds. Each b-roll should last 1.0-3.0 seconds.
-7. Avoid overlapping items when possible.
-8. image_prompt should be a concise, descriptive prompt for AI image generation (e.g. "minimalist Apple logo, flat design, white on transparent").
-9. query should be concise Pexels search terms for stock video.
-10. placement: x,y = position (0=left/top, 1=right/bottom), w = width fraction. Common: top-right corner = {{"x":0.78,"y":0.08,"w":0.20}}.
-11. animation: fade_in and fade_out in seconds (typically 0.1-0.3s).
+=== TIMING RULES (CRITICAL) ===
+Every overlay and every b-roll MUST be anchored to a specific quote from the transcript above.
+
+For each item you propose:
+1. Identify the exact words being spoken that motivate the overlay or b-roll.
+2. Set start_orig = (first anchor word's start timestamp) − 0.2 to 0.6s padding.
+3. Set end_orig   = (last anchor word's end timestamp)   + 0.2 to 0.6s padding.
+4. In the "reason" field, include the anchor quote verbatim.  Format:
+   "reason": "anchor: \\"<exact words>\\" — <your creative rationale>"
+
+Do NOT place items at arbitrary round-number times. Use the word_timings above.
+
+=== B-ROLL RULES ===
+- query must describe LITERAL, DOCUMENTARY footage that directly depicts the concrete nouns or actions being spoken at that moment.
+- Good: speaker says "we built a factory" → query: "factory assembly line manufacturing"
+- Bad:  speaker says "we built a factory" → query: "abstract growth metaphor light rays"
+- Avoid abstract, surreal, or metaphorical stock footage UNLESS the user prompt explicitly requests it (e.g. "make it dreamy", "add surreal visuals").
+- Each b-roll should last 1.0–3.0 seconds.
+
+=== OVERLAY RULES ===
+- image_prompt should be a concise, descriptive prompt for AI image generation.
+- Each overlay should last 0.8–2.0 seconds.
+- placement: x,y = position (0=left/top, 1=right/bottom), w = width fraction. Common: top-right corner = {{"x":0.78,"y":0.08,"w":0.20}}.
+- animation: fade_in and fade_out in seconds (typically 0.1–0.3s).
+
+=== GENERAL ===
+- Use ORIGINAL video timestamps (seconds).
+- Max {_MAX_OVERLAYS} overlays, max {_MAX_BROLL} b-roll inserts.
+- Avoid overlapping items when possible.
+- If the user prompt requests specific overlays or b-roll, include them.
 
 Return ONLY valid JSON with exactly this structure (no markdown, no commentary, no preface text):
 {_OUTPUT_SCHEMA}"""
