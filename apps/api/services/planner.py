@@ -525,13 +525,14 @@ def _nanobanana_cache_key(query: str, style_hint: str, placement_w: float) -> st
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
-def _nanobanana_poll_result_url(task_id: str, timeout_s: float = 30.0) -> Optional[str]:
+def _nanobanana_poll_result_url(task_id: str, timeout_s: float = 120.0) -> Optional[str]:
     """Poll NanoBanana record-info until the task completes. Return result image URL or None."""
     if not _NB_KEY or not task_id:
         return None
 
     deadline = time.time() + timeout_s
     last_err: Optional[str] = None
+    sleep_s = 1.0  # start fast, then back off gently
 
     while time.time() < deadline:
         try:
@@ -560,6 +561,11 @@ def _nanobanana_poll_result_url(task_id: str, timeout_s: float = 30.0) -> Option
                 or payload.get("url")
             )
 
+            # Helpful visibility (remove later if noisy)
+            logger.info(
+                f"NanoBanana poll taskId={task_id} successFlag={success_flag} hasResultUrl={bool(result_url)} sleep={sleep_s:.1f}s"
+            )
+
             if success_flag == 1 and isinstance(result_url, str) and result_url.startswith("http"):
                 return result_url
 
@@ -567,22 +573,26 @@ def _nanobanana_poll_result_url(task_id: str, timeout_s: float = 30.0) -> Option
                 last_err = f"task failed (successFlag={success_flag})"
                 break
 
-            time.sleep(1.0)
+            time.sleep(sleep_s)
+            sleep_s = min(5.0, sleep_s * 1.25)  # gentle backoff
 
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")[:800]
             last_err = f"HTTPError polling record-info: {e.code} body={body}"
+            logger.warning(f"NanoBanana poll HTTPError: {last_err} (taskId={task_id})")
             if e.code in (401, 403):
                 break
-            time.sleep(1.0)
+            time.sleep(sleep_s)
+            sleep_s = min(5.0, sleep_s * 1.25)
         except Exception as e:
             last_err = f"poll error: {e}"
-            time.sleep(1.0)
+            logger.warning(f"NanoBanana poll error: {last_err} (taskId={task_id})")
+            time.sleep(sleep_s)
+            sleep_s = min(5.0, sleep_s * 1.25)
 
     if last_err:
         logger.warning(f"NanoBanana poll failed: {last_err} (taskId={task_id})")
     return None
-
 
 def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> Optional[str]:
     """Generate an overlay image via NanoBanana API. Returns local path or None."""
@@ -632,7 +642,7 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
                 task_id = data["data"].get("taskId")
 
         if task_id:
-            result_url = _nanobanana_poll_result_url(str(task_id), timeout_s=30.0)
+            result_url = _nanobanana_poll_result_url(str(task_id), timeout_s=150.0)
             if not result_url:
                 logger.warning(f"NanoBanana async task did not produce a result within timeout (taskId={task_id})")
                 return None
