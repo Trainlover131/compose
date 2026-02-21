@@ -133,6 +133,7 @@ def process_job(job_id: str):
             prompt=job.prompt,
             preset_id=job.preset_id,
             video_duration=job.duration_sec,
+            video_path=source_path,
         )
         elapsed = int((time.monotonic() - stage_start) * 1000)
         _log_stage(job_id, "plan", "done", elapsed_ms=elapsed)

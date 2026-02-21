@@ -29,6 +29,8 @@ ALLOWED_ORIGINS = [
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
 NANOBANANA_API_KEY = os.getenv("NANOBANANA_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 # Database
 DATABASE_URL = os.getenv(
