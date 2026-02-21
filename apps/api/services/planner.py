@@ -525,6 +525,47 @@ def _nanobanana_cache_key(query: str, style_hint: str, placement_w: float) -> st
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
+def _extract_result_url(payload: dict) -> Optional[str]:
+    """Best-effort extraction of an image URL from various NanoBanana response shapes."""
+    if not isinstance(payload, dict):
+        return None
+
+    # Direct string keys
+    for k in ("resultImageUrl", "resultImageURL", "url", "resultUrl", "resultURL", "result_image_url"):
+        v = payload.get(k)
+        if isinstance(v, str) and v.startswith("http"):
+            return v
+
+    # List keys (list[str] or list[dict])
+    for k in ("resultImageUrls", "resultURLs", "urls", "images", "results"):
+        v = payload.get(k)
+        if isinstance(v, list) and v:
+            first = v[0]
+            if isinstance(first, str) and first.startswith("http"):
+                return first
+            if isinstance(first, dict):
+                u = first.get("url") or first.get("imageUrl") or first.get("imageURL") or first.get("resultImageUrl")
+                if isinstance(u, str) and u.startswith("http"):
+                    return u
+
+    # Nested dicts/lists that often hold the real payload
+    for k in ("data", "result", "output"):
+        v = payload.get(k)
+        if isinstance(v, dict):
+            u = _extract_result_url(v)
+            if u:
+                return u
+        elif isinstance(v, list) and v:
+            first = v[0]
+            if isinstance(first, dict):
+                u = _extract_result_url(first)
+                if u:
+                    return u
+            if isinstance(first, str) and first.startswith("http"):
+                return first
+
+    return None
+
 def _nanobanana_poll_result_url(task_id: str, timeout_s: float = 120.0) -> Optional[str]:
     """Poll NanoBanana record-info until the task completes. Return result image URL or None."""
     if not _NB_KEY or not task_id:
@@ -555,16 +596,22 @@ def _nanobanana_poll_result_url(task_id: str, timeout_s: float = 120.0) -> Optio
                 payload = {}
 
             success_flag = payload.get("successFlag")
-            result_url = (
-                payload.get("resultImageUrl")
-                or payload.get("resultImageURL")
-                or payload.get("url")
-            )
+            result_url = _extract_result_url(payload)
 
-            # Helpful visibility (remove later if noisy)
+            # Helpful visibility
             logger.info(
                 f"NanoBanana poll taskId={task_id} successFlag={success_flag} hasResultUrl={bool(result_url)} sleep={sleep_s:.1f}s"
             )
+
+            # Debug ONLY when provider says "done" but we can't find the URL
+            if success_flag == 1 and not result_url:
+                logger.warning(
+                    "NanoBanana successFlag=1 but no result URL. payload_keys=%s payload=%s raw_keys=%s raw=%s",
+                    list(payload.keys()),
+                    json.dumps(payload, ensure_ascii=False)[:1200],
+                    list(data.keys()) if isinstance(data, dict) else None,
+                    json.dumps(data, ensure_ascii=False)[:1200] if isinstance(data, dict) else str(data)[:1200],
+                )
 
             if success_flag == 1 and isinstance(result_url, str) and result_url.startswith("http"):
                 return result_url
