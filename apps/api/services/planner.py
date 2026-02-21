@@ -512,6 +512,38 @@ def _nanobanana_poll_result_url(
     return None
 
 
+def _parse_nanobanana_pro_result_url(
+    payload: dict,
+) -> tuple[Optional[str], Optional[str]]:
+    """Parse NanoBanana Pro callback-shaped response.
+
+    Authoritative shape:
+        {"code": 200, "msg": "...", "data": {"taskId": "...", "info": {"resultImageUrl": "..."}}}
+
+    Returns (task_id, result_url).  Either may be None if not present/ready.
+    ONLY used for Pro endpoint responses.  Regular parsing is untouched.
+    """
+    if not isinstance(payload, dict):
+        return None, None
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None, None
+
+    task_id = data.get("taskId")
+    if task_id is not None:
+        task_id = str(task_id)
+
+    result_url = None
+    info = data.get("info")
+    if isinstance(info, dict):
+        url_val = info.get("resultImageUrl")
+        if isinstance(url_val, str) and url_val.startswith("http"):
+            result_url = url_val
+
+    return task_id, result_url
+
+
 def _generate_overlay_image_from_item(overlay: dict) -> Optional[str]:
     """Generate overlay image using NanoBananaPromptBuilder. Returns path or None."""
     if not _NB_KEY:
@@ -537,6 +569,31 @@ def _generate_overlay_image_from_item(overlay: dict) -> Optional[str]:
         ri.get("requires_high_fidelity_text", False),
     )
 
+    is_pro = endpoint == _NB_ENDPOINT_PRO
+    endpoint_label = "Pro" if is_pro else "Regular"
+    logger.info("NanoBanana: using %s endpoint", endpoint_label)
+
+    result = _nanobanana_call_and_parse(endpoint, compiled_prompt, cached, is_pro)
+
+    # Pro fallback: retry ONCE with Regular if Pro failed
+    if result is None and is_pro:
+        logger.info(
+            "NanoBanana: Pro endpoint failed, falling back to Regular endpoint"
+        )
+        result = _nanobanana_call_and_parse(
+            _NB_ENDPOINT_REGULAR, compiled_prompt, cached, False,
+        )
+
+    return result
+
+
+def _nanobanana_call_and_parse(
+    endpoint: str,
+    compiled_prompt: str,
+    cached: Path,
+    is_pro: bool,
+) -> Optional[str]:
+    """Send request to NanoBanana and parse response. Returns cached path or None."""
     try:
         payload = json.dumps({
             "prompt": compiled_prompt,
@@ -565,6 +622,49 @@ def _generate_overlay_image_from_item(overlay: dict) -> Optional[str]:
             logger.warning("NanoBanana API HTTP %s: %s", e.code, body)
             return None
 
+        # --- Pro endpoint: use dedicated parser ---
+        if is_pro:
+            pro_task_id, pro_url = _parse_nanobanana_pro_result_url(data)
+
+            # Direct URL available (callback shape with immediate result)
+            if pro_url:
+                img_req = urllib.request.Request(
+                    pro_url,
+                    headers={"Accept": "image/*", "User-Agent": "compose-worker/1.0"},
+                    method="GET",
+                )
+                with urllib.request.urlopen(img_req, timeout=150) as img_resp:
+                    cached.write_bytes(img_resp.read())
+                logger.info("Overlay image downloaded via Pro direct URL: %s", cached)
+                return str(cached)
+
+            # taskId but no URL yet — poll for result
+            if pro_task_id:
+                result_url = _nanobanana_poll_result_url(
+                    pro_task_id, timeout_s=150.0,
+                )
+                if result_url:
+                    img_req = urllib.request.Request(
+                        result_url,
+                        headers={"Accept": "image/*", "User-Agent": "compose-worker/1.0"},
+                        method="GET",
+                    )
+                    with urllib.request.urlopen(img_req, timeout=150) as img_resp:
+                        cached.write_bytes(img_resp.read())
+                    logger.info("Overlay image downloaded via Pro async poll: %s", cached)
+                    return str(cached)
+                else:
+                    logger.warning(
+                        "NanoBanana Pro async task no result (taskId=%s)",
+                        pro_task_id,
+                    )
+                    return None
+
+            # Pro response didn't match expected shape at all
+            logger.warning("NanoBanana Pro response had no taskId or URL")
+            return None
+
+        # --- Regular endpoint: UNCHANGED parsing logic below ---
         task_id = None
         if isinstance(data, dict):
             task_id = data.get("taskId")
