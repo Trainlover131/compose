@@ -606,8 +606,13 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:800]
+            logger.warning(f"NanoBanana API HTTP {e.code}: {body}")
+            return None
 
         # Try to extract image URL or base64 from response
         image_url = None
@@ -755,8 +760,7 @@ def _validate_claude_overlays(
     required_anchors: list[dict],
 ) -> bool:
     """Return True if Claude returned exactly one item per anchor with unchanged timing
-    AND valid placement/animation dict shapes.
-    """
+    and valid placement/animation dict shapes."""
     if len(claude_items) != len(required_anchors):
         return False
 
@@ -769,29 +773,22 @@ def _validate_claude_overlays(
             return False
         if abs(ci.get("end", -1) - ra["end"]) > _TIMING_TOLERANCE:
             return False
-
-        # placement must be a dict with numeric x,y,w in [0,1]
+        # Validate placement is a dict with numeric x, y, w in [0, 1]
         pl = ci.get("placement")
         if not isinstance(pl, dict):
             return False
         for k in ("x", "y", "w"):
             v = pl.get(k)
-            if not isinstance(v, (int, float)):
+            if not isinstance(v, (int, float)) or v < 0 or v > 1:
                 return False
-            if v < 0 or v > 1:
-                return False
-
-        # animation must be a dict with numeric fade_in/fade_out >= 0
+        # Validate animation is a dict with numeric fade_in, fade_out >= 0
         an = ci.get("animation")
         if not isinstance(an, dict):
             return False
         for k in ("fade_in", "fade_out"):
             v = an.get(k)
-            if not isinstance(v, (int, float)):
+            if not isinstance(v, (int, float)) or v < 0:
                 return False
-            if v < 0:
-                return False
-
     return True
 
 
