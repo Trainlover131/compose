@@ -282,3 +282,87 @@ class TestRenderCompiler:
         assert plan.total_duration() == 20.0
         assert len(plan.main_cuts) == 2
         assert plan.output.resolution == [1080, 1920]
+
+
+class TestExtractOverlayTimes:
+    """Unit tests for _extract_overlay_times backwards-compatible time parsing."""
+
+    def test_legacy_start_end_survives(self):
+        """Overlay with legacy start/end fields returns correct floats."""
+        from apps.api.services.planner import _extract_overlay_times
+
+        ov = {"start": 5.0, "end": 10.0, "image_prompt": "test"}
+        s, e, reason = _extract_overlay_times(ov)
+        assert reason is None
+        assert s == 5.0
+        assert e == 10.0
+        assert isinstance(s, float)
+        assert isinstance(e, float)
+
+    def test_start_orig_end_orig_survives(self):
+        """Overlay with start_orig/end_orig fields returns correct floats."""
+        from apps.api.services.planner import _extract_overlay_times
+
+        ov = {"start_orig": 12.5, "end_orig": 18.3, "image_prompt": "test"}
+        s, e, reason = _extract_overlay_times(ov)
+        assert reason is None
+        assert s == pytest.approx(12.5)
+        assert e == pytest.approx(18.3)
+
+    def test_start_orig_preferred_over_legacy(self):
+        """start_orig/end_orig take priority when both pairs present."""
+        from apps.api.services.planner import _extract_overlay_times
+
+        ov = {"start_orig": 3.0, "end_orig": 7.0, "start": 0.0, "end": 1.0}
+        s, e, reason = _extract_overlay_times(ov)
+        assert reason is None
+        assert s == 3.0
+        assert e == 7.0
+
+    def test_missing_both_pairs_rejected(self):
+        """Overlay missing all time fields is rejected with MISSING_TIMES."""
+        from apps.api.services.planner import _extract_overlay_times
+
+        ov = {"image_prompt": "test"}
+        s, e, reason = _extract_overlay_times(ov)
+        assert s is None
+        assert e is None
+        assert reason == "MISSING_TIMES"
+
+    def test_non_numeric_rejected(self):
+        """Overlay with non-numeric time values is rejected."""
+        from apps.api.services.planner import _extract_overlay_times
+
+        ov = {"start_orig": "abc", "end_orig": "xyz"}
+        s, e, reason = _extract_overlay_times(ov)
+        assert s is None
+        assert e is None
+        assert reason == "NON_NUMERIC_TIMES"
+
+    def test_start_ge_end_rejected(self):
+        """Overlay where start >= end is rejected with START_GE_END."""
+        from apps.api.services.planner import _extract_overlay_times
+
+        ov = {"start_orig": 10.0, "end_orig": 5.0}
+        s, e, reason = _extract_overlay_times(ov)
+        assert reason == "START_GE_END"
+
+    def test_string_numbers_coerced(self):
+        """String-encoded numeric values are coerced to float."""
+        from apps.api.services.planner import _extract_overlay_times
+
+        ov = {"start": "2.5", "end": "8.0"}
+        s, e, reason = _extract_overlay_times(ov)
+        assert reason is None
+        assert s == 2.5
+        assert e == 8.0
+
+    def test_fallback_when_orig_non_numeric(self):
+        """Falls back to start/end when start_orig/end_orig are non-numeric."""
+        from apps.api.services.planner import _extract_overlay_times
+
+        ov = {"start_orig": "bad", "end_orig": "bad", "start": 1.0, "end": 3.0}
+        s, e, reason = _extract_overlay_times(ov)
+        assert reason is None
+        assert s == 1.0
+        assert e == 3.0

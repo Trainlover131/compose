@@ -10,6 +10,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -719,32 +720,110 @@ def _summarize_emphasis(analysis: dict) -> str:
 # VisualDirector -> EditPlan mapping helpers
 # ===================================================================
 
+def _extract_overlay_times(
+    ov: dict,
+) -> tuple[Optional[float], Optional[float], Optional[str]]:
+    """Extract start/end times from an overlay dict, backwards-compatibly.
+
+    Prefers start_orig/end_orig if present and numeric.
+    Falls back to start/end if present and numeric.
+    Returns (start, end, None) on success, or (None, None, drop_reason).
+    """
+    for s_key, e_key in [("start_orig", "end_orig"), ("start", "end")]:
+        s_raw = ov.get(s_key)
+        e_raw = ov.get(e_key)
+        if s_raw is None or e_raw is None:
+            continue
+        try:
+            s = float(s_raw)
+            e = float(e_raw)
+        except (ValueError, TypeError):
+            continue
+        if not (math.isfinite(s) and math.isfinite(e)):
+            continue
+        if s >= e:
+            return None, None, "START_GE_END"
+        return s, e, None
+
+    has_any = any(ov.get(k) is not None for k in ("start_orig", "end_orig", "start", "end"))
+    return None, None, ("NON_NUMERIC_TIMES" if has_any else "MISSING_TIMES")
+
+
+def _log_overlay_drop_diagnostics(
+    idx: int,
+    ov: dict,
+    mapped_start: Optional[float],
+    mapped_end: Optional[float],
+    drop_reason: Optional[str],
+) -> None:
+    """Log compact diagnostics for a single raw overlay (first 3 only)."""
+    field_flags: list[str] = []
+    numeric_parts: list[str] = []
+    for key in ("start", "end", "start_orig", "end_orig"):
+        val = ov.get(key)
+        if val is not None:
+            field_flags.append(key)
+            try:
+                numeric_parts.append(f"{key}={float(val):.3f}")
+            except (ValueError, TypeError):
+                numeric_parts.append(f"{key}=NaN")
+
+    mapped_str = ""
+    if mapped_start is not None and mapped_end is not None:
+        mapped_str = f" mapped={mapped_start:.3f}-{mapped_end:.3f}"
+    elif mapped_start is not None or mapped_end is not None:
+        mapped_str = f" mapped=({mapped_start},{mapped_end})"
+
+    status = f"drop_reason={drop_reason}" if drop_reason else "KEPT"
+    logger.debug(
+        "overlay[%d] has=(%s) %s%s %s",
+        idx,
+        ",".join(field_flags) or "none",
+        " ".join(numeric_parts) or "no_numeric",
+        mapped_str,
+        status,
+    )
+
+
 def _map_vd_overlays(
     vd_overlays: list[dict],
     timeline_map: list[dict],
 ) -> list[dict]:
     """Map VisualDirector overlays from original to final timeline.
 
-    Converts start_orig/end_orig -> start/end and formats for EditPlan.
-    Drops items that fall entirely outside kept cuts.
+    Backwards-compatible: prefers start_orig/end_orig, falls back to
+    start/end.  Drops items that fall entirely outside kept cuts.
     """
     mapped: list[dict] = []
-    for ov in vd_overlays:
-        fs = _map_time(ov["start_orig"], timeline_map)
-        fe = _map_time(ov["end_orig"], timeline_map)
-        if fs is None or fe is None or fe <= fs:
+    for idx, ov in enumerate(vd_overlays):
+        orig_s, orig_e, drop_reason = _extract_overlay_times(ov)
+
+        fs = fe = None
+        if not drop_reason:
+            fs = _map_time(orig_s, timeline_map)
+            fe = _map_time(orig_e, timeline_map)
+            if fs is None or fe is None:
+                drop_reason = "FAILED_TO_MAP_ORIG_TO_FINAL"
+            elif fe <= fs:
+                drop_reason = "START_GE_END"
+
+        if idx < 3:
+            _log_overlay_drop_diagnostics(idx, ov, fs, fe, drop_reason)
+
+        if drop_reason:
             continue
+
         mapped.append({
             "type": "image_overlay",
             "start": round(fs, 3),
             "end": round(fe, 3),
             "anchor_phrase": "",
             "keyword": "",
-            "query": ov["image_prompt"],
+            "query": ov.get("image_prompt", ""),
             "source": "ai",
             "style_hint": "",
-            "placement": ov["placement"],
-            "animation": ov["animation"],
+            "placement": ov.get("placement", {}),
+            "animation": ov.get("animation", {}),
             "notes": ov.get("reason", ""),
             "intent": ov.get("intent", ""),
             "style_notes": ov.get("style_notes"),
