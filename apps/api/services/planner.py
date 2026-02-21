@@ -550,8 +550,13 @@ def _generate_overlay_image(query: str, style_hint: str, placement_w: float) -> 
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:800]
+            logger.warning(f"NanoBanana API HTTP {e.code}: {body}")
+            return None
 
         # Try to extract image URL or base64 from response
         image_url = None
