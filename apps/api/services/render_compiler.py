@@ -102,7 +102,7 @@ _HEAVY_HALATION_BLEND_OPACITY = 0.18
 
 # Zoompan micro-motion: subtle push-in (1.00 -> 1.03 over clip duration).
 # d=1 means 1 output frame per input frame -> no fps/duration change.
-_HEAVY_ZOOMPAN_EXPR = "zoompan=z='min(1.03,1+0.001*on)':d=1:s=1080x1920:fps=30"
+_HEAVY_ZOOMPAN_EXPR = "zoompan=z='min(1.03,1+0.001*on)':d=1:s=1080x1920"
 
 # HALFTONE uses frei0r — only defined when the filter is available at runtime.
 # If frei0r is absent the scheduler falls back to CLEAN or TV.
@@ -269,10 +269,216 @@ def compose_broll_look_for_user_request(user_look: str) -> str:
     return BROLL_DEFAULT_FILM_FF_FILTER
 
 
+# ---------------------------------------------------------------------------
+# Motion (safe visual-only animation for b-roll + overlay images)
+# ---------------------------------------------------------------------------
+
+_FORBIDDEN_MOTION_TOKENS = [
+    "setpts", "fps", "tpad", "trim", "atempo", "asetpts", "adelay", "concat",
+    "-vsync", "-r",
+]
+
+def _motion_seed(*parts: str) -> int:
+    h = hashlib.md5("||".join(parts).encode("utf-8")).hexdigest()
+    return int(h[:8], 16)
+
+def _pick(seed: int, options: list[str]) -> str:
+    return options[seed % len(options)]
+
+def _pick_dir(seed: int) -> str:
+    return _pick(seed, ["left", "right", "up", "down"])
+
+def _clamp01_expr(x_expr: str) -> str:
+    # NOTE: commas inside expressions must be escaped in filtergraph strings.
+    return f"min(max({x_expr}\\,0)\\,1)"
+
+def _validate_motion_fragment(fragment: str, ctx: str) -> None:
+    frag = fragment or ""
+    if "'" in frag or '"' in frag:
+        raise ValueError(f"Quotes in motion fragment ({ctx}): {fragment}")
+    lower = frag.lower()
+    for tok in _FORBIDDEN_MOTION_TOKENS:
+        if tok in lower:
+            raise ValueError(f"Forbidden token in motion fragment ({ctx}): {tok} :: {fragment}")
+
+def _default_motion_for_broll(bc: dict) -> dict:
+    # Deterministic per clip path + time window (does not change selection or timing)
+    path = str(bc.get("path", ""))
+    seed = _motion_seed(path, f"{bc.get('start', 0.0):.3f}", f"{bc.get('end', 0.0):.3f}")
+    mtype = _pick(seed, ["fade", "micro_push", "slide"])
+    return {
+        "type": mtype,
+        "in_dur": 0.12,
+        "out_dur": 0.12,
+        "dir": _pick_dir(seed + 17),
+        "strength": "subtle",
+        "seed": seed,
+    }
+
+def _default_motion_for_overlay(oi: dict) -> dict:
+    path = str(oi.get("path", ""))
+    seed = _motion_seed(path, f"{oi.get('start', 0.0):.3f}", f"{oi.get('end', 0.0):.3f}")
+    mtype = _pick(seed, ["fade", "slide", "pop"])
+    return {
+        "type": mtype,
+        "in_dur": float(oi.get("fade_in", 0.12) or 0.12),
+        "out_dur": float(oi.get("fade_out", 0.12) or 0.12),
+        "dir": _pick_dir(seed + 23),
+        "strength": "subtle",
+        "seed": seed,
+    }
+
+def compile_motion_for_broll(bc: dict, motion_enabled: bool) -> str:
+    """
+    Returns a FILTER TAIL (begins with ',' or '') to append AFTER the b-roll look filter.
+    Must not change timing/duration; visual-only.
+    """
+    if not motion_enabled:
+        return ""
+
+    motion = bc.get("motion") or _default_motion_for_broll(bc)
+    mtype = (motion.get("type") or "none").lower()
+
+    start = float(bc["start"])
+    end = float(bc["end"])
+    dur = max(0.05, end - start)
+
+    in_dur = float(motion.get("in_dur") or 0.12)
+    out_dur = float(motion.get("out_dur") or 0.12)
+    in_dur = max(0.06, min(0.25, in_dur))
+    out_dur = max(0.06, min(0.25, out_dur))
+
+    # t here is the main timeline time because b-roll PTS is offset with setpts to bc['start']/TB
+    u = _clamp01_expr(f"(t-{start:.3f})/{dur:.6f}")
+
+    if mtype == "fade":
+        # Subtle triangle brightness ramp: 0 at edges, peak mid-clip.
+        # Purely visual; does not affect duration.
+        # tri = 1 - abs(2*u - 1)
+        tri = f"(1-abs(2*{u}-1))"
+        tail = f",eq=brightness=0.010*{tri}:eval=frame"
+        _validate_motion_fragment(tail, "broll.fade")
+        return tail
+
+    if mtype == "micro_push":
+        # Push-in via crop-with-zoom, then scale back (duration unchanged).
+        # e(t) from 0 -> 0.02 across clip.
+        e = f"(0.020*{u})"
+        tail = (
+            f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x=(iw-w)/2:y=(ih-h)/2:eval=frame"
+            f",scale=1080:1920"
+        )
+        _validate_motion_fragment(tail, "broll.micro_push")
+        return tail
+
+    if mtype == "slide":
+        # Slide is implemented as a tiny pan within a tiny zoom (to avoid borders).
+        # Keep zoom extremely small so it reads as slide, not zoom.
+        dirn = (motion.get("dir") or "left").lower()
+        e = f"(0.010)"  # constant micro-zoom
+        # pan offset in px (within the zoomed frame); keep tiny to avoid nausea
+        pan = f"(14*(2*{u}-1))"  # -14..+14
+        if dirn in ("left", "right"):
+            sign = "-" if dirn == "left" else ""
+            x = f"(iw-w)/2+({sign}{pan})"
+            y = f"(ih-h)/2"
+        else:
+            sign = "-" if dirn == "up" else ""
+            x = f"(iw-w)/2"
+            y = f"(ih-h)/2+({sign}{pan})"
+        tail = (
+            f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x={x}:y={y}:eval=frame"
+            f",scale=1080:1920"
+        )
+        _validate_motion_fragment(tail, "broll.slide")
+        return tail
+
+    return ""
+
+def compile_motion_for_overlay(
+    oi: dict,
+    motion_enabled: bool,
+    start: float,
+    end: float,
+    x0: int,
+    y0: int,
+    w_px: int,
+) -> tuple[str, str, str]:
+    """
+    Returns (prep_tail, x_expr, y_expr)
+    - prep_tail: appended to overlay prep stream (starts with ',' or '')
+    - x_expr/y_expr: passed to overlay x= / y= (NO enable window changes)
+    """
+    if not motion_enabled:
+        return ("", str(x0), str(y0))
+
+    motion = oi.get("motion") or _default_motion_for_overlay(oi)
+    mtype = (motion.get("type") or "none").lower()
+    in_dur = float(motion.get("in_dur") or 0.12)
+    out_dur = float(motion.get("out_dur") or 0.12)
+    in_dur = max(0.06, min(0.25, in_dur))
+    out_dur = max(0.06, min(0.25, out_dur))
+
+    dur = max(0.05, end - start)
+
+    prep_tail = ""
+    x_expr = str(x0)
+    y_expr = str(y0)
+
+    if mtype == "fade":
+        # Overlay stream time is reset with setpts=PTS-STARTPTS, so t is 0..dur here.
+        prep_tail = (
+            f",fade=t=in:st=0:d={in_dur:.3f}:alpha=1"
+            f",fade=t=out:st={max(0.0, dur - out_dur):.3f}:d={out_dur:.3f}:alpha=1"
+        )
+
+    elif mtype == "slide":
+        dirn = (motion.get("dir") or "left").lower()
+        # progress p from 0..1 during in_dur in main timeline terms
+        p = _clamp01_expr(f"(t-{start:.3f})/{in_dur:.6f}")
+        # slide offset is relative to overlay width, subtle
+        off = f"({w_px}*0.20)"
+        if dirn == "left":
+            x_expr = f"{x0}+(-{off})*(1-{p})"
+            y_expr = f"{y0}"
+        elif dirn == "right":
+            x_expr = f"{x0}+({off})*(1-{p})"
+            y_expr = f"{y0}"
+        elif dirn == "up":
+            x_expr = f"{x0}"
+            y_expr = f"{y0}+(-{off})*(1-{p})"
+        else:
+            x_expr = f"{x0}"
+            y_expr = f"{y0}+({off})*(1-{p})"
+        # also do subtle alpha fade (safe)
+        prep_tail = (
+            f",fade=t=in:st=0:d={in_dur:.3f}:alpha=1"
+            f",fade=t=out:st={max(0.0, dur - out_dur):.3f}:d={out_dur:.3f}:alpha=1"
+        )
+
+    elif mtype == "pop":
+        # Slight scale-up from 0.94->1.00 over in_dur, plus subtle alpha fade.
+        # This uses commas inside expressions -> must be escaped in filtergraph string.
+        p = _clamp01_expr(f"t/{in_dur:.6f}")
+        s = f"(0.94+0.06*{p})"
+        prep_tail = (
+            f",scale=iw*{s}:ih*{s}:eval=frame"
+            f",fade=t=in:st=0:d={in_dur:.3f}:alpha=1"
+            f",fade=t=out:st={max(0.0, dur - out_dur):.3f}:d={out_dur:.3f}:alpha=1"
+        )
+
+    _validate_motion_fragment(prep_tail, "overlay.prep")
+    # x_expr/y_expr go into overlay=, so validate they don’t contain forbidden tokens too
+    _validate_motion_fragment(x_expr, "overlay.x")
+    _validate_motion_fragment(y_expr, "overlay.y")
+
+    return (prep_tail, x_expr, y_expr)
+
 def build_broll_filtergraph_entries(
     broll_clips: list[dict],
     input_index_start: int,
     last_label: str,
+    motion_enabled: bool,
 ) -> tuple[list[str], str, int]:
     """Build filter_complex entries for b-roll clips with look presets.
 
@@ -342,10 +548,16 @@ def build_broll_filtergraph_entries(
                 f"all_mode=screen:all_opacity={_HEAVY_HALATION_BLEND_OPACITY}[{glow}]"
             )
             # 2c: zoompan micro push-in (preserves duration: d=1)
-            filters.append(f"[{glow}]{_HEAVY_ZOOMPAN_EXPR}[{look_label}]")
-        else:
+            motion_tail = compile_motion_for_broll(bc, motion_enabled=motion_enabled)
             filters.append(
-                f"[{raw_label}]{look_filter}[{look_label}]"
+                f"[{glow}]{_HEAVY_ZOOMPAN_EXPR},"
+                f"setpts=PTS-STARTPTS+{bc['start']:.3f}/TB"
+                f"{motion_tail}[{look_label}]"
+            )
+        else:
+            motion_tail = compile_motion_for_broll(bc, motion_enabled=motion_enabled)
+            filters.append(
+                f"[{raw_label}]{look_filter}{motion_tail}[{look_label}]"
             )
         # Stage 3: composite [b{i}_look] (NOT [b{i}_raw]) onto running chain
         filters.append(
@@ -684,6 +896,7 @@ def compile_render(
     # If we have ANY visual layers to apply, do one filter_complex pass
     if broll_clips or overlay_items or has_captions:
         layered_path = work / "layered.mp4"
+        motion_enabled = True
 
         # Inputs: base video first, then b-roll, then overlay images
         inputs = ["-i", current_video]
@@ -698,7 +911,10 @@ def compile_render(
 
         # ---- B-ROLL FULLSCREEN CUTAWAYS ----
         broll_filters, last_label, input_index = build_broll_filtergraph_entries(
-            broll_clips, input_index, last_label,
+            broll_clips,
+            input_index,
+            last_label,
+            motion_enabled=motion_enabled,
         )
         filters.extend(broll_filters)
 
@@ -720,15 +936,26 @@ def compile_render(
 
             # Prepare overlay stream: scale, ensure alpha, reset pts
             prep = f"ov{j}"
-            filters.append(
-                f"[{ov_idx}:v]scale={w_px}:-1,format=rgba,"
-                f"setpts=PTS-STARTPTS[{prep}]"
+
+            # Motion compilation (prep tail + animated x/y). DOES NOT change enable window.
+            prep_tail, x_expr, y_expr = compile_motion_for_overlay(
+                oi=oi,
+                motion_enabled=motion_enabled,
+                start=float(oi["start"]),
+                end=float(oi["end"]),
+                x0=x_px,
+                y0=y_px,
+                w_px=w_px,
             )
 
-            # Simple on/off enable (fade can be added later)
+            filters.append(
+                f"[{ov_idx}:v]scale={w_px}:-1,format=rgba,"
+                f"setpts=PTS-STARTPTS{prep_tail}[{prep}]"
+            )
+
             filters.append(
                 f"{last_label}[{prep}]overlay="
-                f"x={x_px}:y={y_px}:"
+                f"x={x_expr}:y={y_expr}:"
                 f"enable='between(t,{oi['start']:.3f},{oi['end']:.3f})'[{out}]"
             )
             last_label = f"[{out}]"
@@ -741,9 +968,12 @@ def compile_render(
 
         map_v = last_label if str(last_label).startswith("[") else f"[{last_label}]"
 
+        fc = ";".join(filters) if filters else "null"
+        logger.info(f"filter_complex len={len(fc)} head={fc[:200]} tail={fc[-200:]}")
+
         cmd = ["ffmpeg", "-y"] + inputs + [
             "-filter_complex_threads", "1",
-            "-filter_complex", ";".join(filters) if filters else "null",
+            "-filter_complex", fc,
             "-map", map_v, "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
             "-threads", "2",
@@ -760,28 +990,136 @@ def compile_render(
             current_video = str(layered_path)
         except RuntimeError as e:
             logger.warning(f"Layer pass failed (non-fatal): {e}")
+            logger.warning("Retrying layer pass with ALL motion disabled (keeping b-roll + overlays + same enable windows).")
 
-            # Fallback: at least burn captions if we have them
-            if has_captions:
-                captioned_path = work / "captioned.mp4"
-                try:
-                    _run_ffmpeg(
-                        [
-                            "ffmpeg", "-y",
-                            "-i", current_video,
-                            "-vf", f"ass={ass_path}",
-                            "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-                            "-threads", "2",
-                            "-af", "aresample=async=1:first_pts=0",
-                            "-c:a", "aac", "-b:a", "160k",
-                            str(captioned_path),
-                        ],
-                        "burn-captions-fallback",
-                        timeout=MAX_RENDER_TIMEOUT_SEC,
+            # Rebuild filter graph with motion disabled by stripping motion tails:
+            # - b-roll: no motion (compile_motion_for_broll returns "")
+            # - overlays: no prep_tail, fixed x/y
+            filters_retry = []
+            last_label_retry = "[0:v]"
+            input_index_retry = 1
+
+            # ---- B-ROLL FULLSCREEN CUTAWAYS (NO MOTION) ----
+            for idx, bc in enumerate(broll_clips):
+                broll_idx = input_index_retry
+                input_index_retry += 1
+
+                raw_label = f"b{idx}_raw"
+                look_label = f"b{idx}_look"
+                out_label = f"b{idx}_out"
+                dur_clip = bc["end"] - bc["start"]
+
+                clip_key = bc.get("path", f"broll_{idx}")
+                look = choose_broll_look(clip_key, idx, None, len(broll_clips), {})
+                look_filter = _broll_filter_for_look(look)
+
+                filters_retry.append(
+                    f"[{broll_idx}:v]trim=duration={dur_clip:.3f},"
+                    f"scale=1080:1920:force_original_aspect_ratio=increase,"
+                    f"crop=1080:1920,"
+                    f"setpts=PTS-STARTPTS+{bc['start']:.3f}/TB,"
+                    f"tpad=stop_mode=clone:stop_duration={dur_clip:.3f}[{raw_label}]"
+                )
+
+                if look == "HEAVY":
+                    graded = f"b{idx}_graded"
+                    halo_main = f"b{idx}_hmain"
+                    halo_src = f"b{idx}_hsrc"
+                    halo_blur = f"b{idx}_hblur"
+                    glow = f"b{idx}_glow"
+                    filters_retry.append(f"[{raw_label}]{look_filter}[{graded}]")
+                    filters_retry.append(f"[{graded}]split[{halo_main}][{halo_src}]")
+                    filters_retry.append(f"[{halo_src}]{_HEAVY_HALATION_BLUR}[{halo_blur}]")
+                    filters_retry.append(
+                        f"[{halo_main}][{halo_blur}]blend="
+                        f"all_mode=screen:all_opacity={_HEAVY_HALATION_BLEND_OPACITY}[{glow}]"
                     )
-                    current_video = str(captioned_path)
-                except RuntimeError as e2:
-                    logger.warning(f"Caption burn fallback failed (non-fatal): {e2}")
+                    heavy_out = f"b{idx}_heavy"
+                    filters_retry.append(
+                        f"[{glow}]{_HEAVY_ZOOMPAN_EXPR},"
+                        f"setpts=PTS-STARTPTS+{bc['start']:.3f}/TB"
+                        f"[{heavy_out}]"
+                    )
+                    filters_retry.append(f"[{heavy_out}]null[{look_label}]")
+                else:
+                    filters_retry.append(f"[{raw_label}]{look_filter}[{look_label}]")
+
+                filters_retry.append(
+                    f"{last_label_retry}[{look_label}]overlay="
+                    f"enable='between(t,{bc['start']:.3f},{bc['end']:.3f})'[{out_label}]"
+                )
+                last_label_retry = f"[{out_label}]"
+
+            # ---- OVERLAY IMAGES (NO MOTION) ----
+            for j, oi in enumerate(overlay_items):
+                ov_idx = input_index_retry
+                input_index_retry += 1
+
+                out = f"vo{j}"
+
+                w_px = max(1, int(1080 * oi["w"]))
+                x_px = int(1080 * oi["x"])
+                y_px = int(1920 * oi["y"])
+
+                prep = f"ov{j}"
+                filters_retry.append(
+                    f"[{ov_idx}:v]scale={w_px}:-1,format=rgba,"
+                    f"setpts=PTS-STARTPTS[{prep}]"
+                )
+
+                filters_retry.append(
+                    f"{last_label_retry}[{prep}]overlay="
+                    f"x={x_px}:y={y_px}:"
+                    f"enable='between(t,{oi['start']:.3f},{oi['end']:.3f})'[{out}]"
+                )
+                last_label_retry = f"[{out}]"
+
+            # ---- CAPTIONS (ASS burn) ----
+            if has_captions:
+                cap_out = "vcap"
+                filters_retry.append(f"{last_label_retry}ass={ass_path}[{cap_out}]")
+                last_label_retry = f"[{cap_out}]"
+
+            map_v_retry = last_label_retry if str(last_label_retry).startswith("[") else f"[{last_label_retry}]"
+
+            cmd_retry = ["ffmpeg", "-y"] + inputs + [
+                "-filter_complex_threads", "1",
+                "-filter_complex", ";".join(filters_retry) if filters_retry else "null",
+                "-map", map_v_retry, "-map", "0:a?",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                "-threads", "2",
+                "-af", "aresample=async=1:first_pts=0",
+                "-c:a", "aac", "-b:a", "160k",
+                str(layered_path),
+            ]
+
+            try:
+                _run_ffmpeg(cmd_retry, "layer-broll-overlays-captions-retry-no-motion", timeout=MAX_RENDER_TIMEOUT_SEC)
+                current_video = str(layered_path)
+            except RuntimeError as e_retry:
+                logger.warning(f"No-motion retry layer pass failed (non-fatal): {e_retry}")
+
+                # LAST resort: captions-only
+                if has_captions:
+                    captioned_path = work / "captioned.mp4"
+                    try:
+                        _run_ffmpeg(
+                            [
+                                "ffmpeg", "-y",
+                                "-i", current_video,
+                                "-vf", f"ass={ass_path}",
+                                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                                "-threads", "2",
+                                "-af", "aresample=async=1:first_pts=0",
+                                "-c:a", "aac", "-b:a", "160k",
+                                str(captioned_path),
+                            ],
+                            "burn-captions-fallback",
+                            timeout=MAX_RENDER_TIMEOUT_SEC,
+                        )
+                        current_video = str(captioned_path)
+                    except RuntimeError as e2:
+                        logger.warning(f"Caption burn fallback failed (non-fatal): {e2}")
                     
     # Step 5: Mix in music
     if edit_plan.music.enabled:
