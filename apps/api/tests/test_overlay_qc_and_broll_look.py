@@ -481,22 +481,27 @@ class TestHeavyFilmPreset:
     """Tests for the HEAVY film + motion b-roll preset."""
 
     def test_heavy_preset_contains_all_components(self):
-        """HEAVY preset string must include all 7 required effect components."""
-        # 1) VHS softness: boxblur + unsharp
+        """HEAVY preset string must include all required effect components."""
+        # 1) Film softness: boxblur + unsharp
         assert "boxblur=" in BROLL_HEAVY_FILM_FF_FILTER
         assert "unsharp=" in BROLL_HEAVY_FILM_FF_FILTER
-        # 2) Grain: noise filter
+        # 2) Teal/orange color grade: colorbalance
+        assert "colorbalance=" in BROLL_HEAVY_FILM_FF_FILTER
+        # 3) Grain: noise filter
         assert "noise=" in BROLL_HEAVY_FILM_FF_FILTER
         assert "c0s=" in BROLL_HEAVY_FILM_FF_FILTER
-        # 3) Flicker: eq with brightness modulated by sin
+        # 4) Flicker: eq with brightness modulated by sin
         assert "sin(" in BROLL_HEAVY_FILM_FF_FILTER
         assert "eval=frame" in BROLL_HEAVY_FILM_FF_FILTER
-        # 4) Scanlines: drawgrid
+        # 5) Scanlines: drawgrid
         assert "drawgrid=" in BROLL_HEAVY_FILM_FF_FILTER
-        # 5) Chroma bleed: rgbashift
-        assert "rgbashift=" in BROLL_HEAVY_FILM_FF_FILTER
-        # 6) Halation: tested separately (split/blur/blend in filtergraph)
-        # 7) Zoom/pan: tested separately (zoompan in filtergraph)
+        # 6) Vignette
+        assert "vignette=" in BROLL_HEAVY_FILM_FF_FILTER
+        # 7) Must NOT contain grayscale or purple-pushing filters
+        assert "hue=s=0" not in BROLL_HEAVY_FILM_FF_FILTER
+        assert "format=gray" not in BROLL_HEAVY_FILM_FF_FILTER
+        # 8) Halation: tested separately (split/blur/blend in filtergraph)
+        # 9) Zoom/pan: tested separately (zoompan in filtergraph)
 
     @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
     @patch("apps.api.services.render_compiler._probe_frei0r", return_value=False)
@@ -592,27 +597,24 @@ class TestHeavyFilmPreset:
         # No format=rgba (overlay image prep) should appear
         assert "format=rgba" not in joined
 
-    def test_heavy_preset_vhs_softness_values(self):
-        """VHS softness must have specific boxblur + unsharp parameters."""
-        assert "boxblur=2:1" in BROLL_HEAVY_FILM_FF_FILTER
-        assert "unsharp=5:5:1.2" in BROLL_HEAVY_FILM_FF_FILTER
+    def test_heavy_preset_film_softness_values(self):
+        """Film softness must have specific boxblur + unsharp parameters."""
+        assert "boxblur=1:1" in BROLL_HEAVY_FILM_FF_FILTER
+        assert "unsharp=5:5:0.8" in BROLL_HEAVY_FILM_FF_FILTER
 
     def test_heavy_preset_grain_strength(self):
-        """Grain noise must be heavier than TV preset (c0s >= 12)."""
+        """Grain noise must be visible but not overwhelming (c0s > TV's 8)."""
         import re
         heavy_match = re.search(r"c0s=(\d+)", BROLL_HEAVY_FILM_FF_FILTER)
         tv_match = re.search(r"c0s=(\d+)", BROLL_TV_LOOK_PRESET_FF_FILTER)
         assert heavy_match and tv_match
         assert int(heavy_match.group(1)) > int(tv_match.group(1))
 
-    def test_heavy_preset_chroma_shift_bounded(self):
-        """Chroma shift must be modest (abs(rh) <= 5, abs(bh) <= 5)."""
-        import re
-        rh = re.search(r"rh=(-?\d+)", BROLL_HEAVY_FILM_FF_FILTER)
-        bh = re.search(r"bh=(-?\d+)", BROLL_HEAVY_FILM_FF_FILTER)
-        assert rh and bh
-        assert abs(int(rh.group(1))) <= 5
-        assert abs(int(bh.group(1))) <= 5
+    def test_heavy_preset_no_purple_or_grayscale(self):
+        """HEAVY chain must NOT contain grayscale or purple/magenta-pushing filters."""
+        assert "hue=s=0" not in BROLL_HEAVY_FILM_FF_FILTER
+        assert "format=gray" not in BROLL_HEAVY_FILM_FF_FILTER
+        assert "rgbashift" not in BROLL_HEAVY_FILM_FF_FILTER
 
 
 # ====================================================================

@@ -36,36 +36,35 @@ BROLL_TV_LOOK_PRESET_FF_FILTER = (
     "vignette=PI/5"
 )
 
-# HEAVY FILM preset: strong VHS/film look for b-roll only.
+# HEAVY FILM preset: teal/orange "blockbuster" color-corrected film look.
 # Components (all built-in ffmpeg filters, no external deps):
-#   1) VHS softness:  boxblur=2:1 -> unsharp (mild blur + re-sharpen edges)
-#   2) Grain:         noise=c0s=18:c0f=t+u (heavy temporal+uniform grain)
-#   3) Flicker:       eq with sin(t) brightness modulation
-#   4) Scanlines:     drawgrid with thin dark lines every 4px
-#   5) Chroma bleed:  rgbashift horizontal red/blue shift
-#   6) Halation/glow: handled via split/overlay in build_broll_filtergraph_entries
-#   7) Zoom/pan:      zoompan micro push-in, handled in build_broll_filtergraph_entries
+#   1) Softness:     boxblur=1:1 -> unsharp (mild blur + re-sharpen edges)
+#   2) Color grade:  eq (contrast/sat) + colorbalance (shadows→teal, highlights→orange)
+#   3) Grain:        noise=c0s=10:c0f=t+u (neutral gray film grain)
+#   4) Flicker:      eq with sin(t) brightness modulation
+#   5) Scanlines:    drawgrid with thin dark lines every 4px
+#   6) Vignette:     faint black vignette
+#   7) Halation/glow: handled via split/overlay in build_broll_filtergraph_entries
+#   8) Zoom/pan:      zoompan micro push-in, handled in build_broll_filtergraph_entries
 #
 # The "base" portion is applied as a single linear chain.  Halation (split ->
 # gblur -> blend) and zoompan (timing-sensitive) are injected as separate
 # filter lines by build_broll_filtergraph_entries when look == HEAVY.
 BROLL_HEAVY_FILM_FF_FILTER = (
-    # VHS softness: mild blur then re-sharpen
-    "boxblur=2:1,"
-    "unsharp=5:5:1.2:5:5:0.0,"
-    # Color grading: desaturated, crushed blacks, cool tint
-    "eq=contrast=1.18:brightness=-0.03:saturation=0.72,"
-    "colorbalance=rs=0.03:gs=0.01:bs=0.08:rh=-0.04:gh=-0.01:bh=0.07,"
-    # Grain
-    "noise=c0s=18:c0f=t+u,"
+    # Film softness: mild blur then re-sharpen
+    "boxblur=1:1,"
+    "unsharp=5:5:0.8:5:5:0.0,"
+    # Teal/orange color grade: shadows→cyan, highlights→warm orange
+    "eq=contrast=1.12:brightness=-0.01:saturation=1.15,"
+    "colorbalance=rs=-0.07:gs=0.03:bs=0.09:rm=-0.02:gm=0.01:bm=0.01:rh=0.10:gh=0.04:bh=-0.06,"
+    # Neutral film grain (gray, not colored)
+    "noise=c0s=10:c0f=t+u,"
     # Flicker: subtle brightness oscillation (~3 Hz, small amplitude)
-    "eq=brightness='0.015*sin(2*PI*t*3)':eval=frame,"
+    "eq=brightness='0.012*sin(2*PI*t*3)':eval=frame,"
     # Scanlines: thin dark horizontal lines every 4 pixels
-    "drawgrid=w=0:h=4:t=1:c=black@0.07,"
-    # Chroma bleed: slight horizontal red/blue channel shift
-    "rgbashift=rh=-3:bh=3:rv=0:bv=0,"
-    # Vignette
-    "vignette=PI/4"
+    "drawgrid=w=0:h=4:t=1:c=black@0.05,"
+    # Faint black vignette
+    "vignette=PI/5"
 )
 
 # Halation sub-filter: applied via split/overlay for HEAVY look.
