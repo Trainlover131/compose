@@ -36,14 +36,45 @@ BROLL_TV_LOOK_PRESET_FF_FILTER = (
 )
 
 # HEAVY FILM preset: strong VHS/film look for b-roll only.
-# Placeholder — dialed up in a follow-up commit.
+# Components (all built-in ffmpeg filters, no external deps):
+#   1) VHS softness:  boxblur=2:1 -> unsharp (mild blur + re-sharpen edges)
+#   2) Grain:         noise=c0s=18:c0f=t+u (heavy temporal+uniform grain)
+#   3) Flicker:       eq with sin(t) brightness modulation
+#   4) Scanlines:     drawgrid with thin dark lines every 4px
+#   5) Chroma bleed:  rgbashift horizontal red/blue shift
+#   6) Halation/glow: handled via split/overlay in build_broll_filtergraph_entries
+#   7) Zoom/pan:      zoompan micro push-in, handled in build_broll_filtergraph_entries
+#
+# The "base" portion is applied as a single linear chain.  Halation (split ->
+# gblur -> blend) and zoompan (timing-sensitive) are injected as separate
+# filter lines by build_broll_filtergraph_entries when look == HEAVY.
 BROLL_HEAVY_FILM_FF_FILTER = (
-    "eq=contrast=1.15:brightness=-0.02:saturation=0.80,"
-    "unsharp=5:5:0.8:5:5:0.0,"
-    "colorbalance=rs=0.03:gs=0.02:bs=0.07:rh=-0.03:gh=0.0:bh=0.06,"
-    "noise=c0s=12:c0f=t,"
+    # VHS softness: mild blur then re-sharpen
+    "boxblur=2:1,"
+    "unsharp=5:5:1.2:5:5:0.0,"
+    # Color grading: desaturated, crushed blacks, cool tint
+    "eq=contrast=1.18:brightness=-0.03:saturation=0.72,"
+    "colorbalance=rs=0.03:gs=0.01:bs=0.08:rh=-0.04:gh=-0.01:bh=0.07,"
+    # Grain
+    "noise=c0s=18:c0f=t+u,"
+    # Flicker: subtle brightness oscillation (~3 Hz, small amplitude)
+    "eq=brightness='0.015*sin(2*PI*t*3)':eval=frame,"
+    # Scanlines: thin dark horizontal lines every 4 pixels
+    "drawgrid=w=0:h=4:t=1:c=black@0.07,"
+    # Chroma bleed: slight horizontal red/blue channel shift
+    "rgbashift=rh=-3:bh=3:rv=0:bv=0,"
+    # Vignette
     "vignette=PI/4"
 )
+
+# Halation sub-filter: applied via split/overlay for HEAVY look.
+# Blurs highlights and blends back at low opacity for a glow effect.
+_HEAVY_HALATION_BLUR = "gblur=sigma=25"
+_HEAVY_HALATION_BLEND_OPACITY = 0.18
+
+# Zoompan micro-motion: subtle push-in (1.00 -> 1.03 over clip duration).
+# d=1 means 1 output frame per input frame -> no fps/duration change.
+_HEAVY_ZOOMPAN_EXPR = "zoompan=z='min(1.03,1+0.001*on)':d=1:s=1080x1920:fps=30"
 
 # HALFTONE uses frei0r — only defined when the filter is available at runtime.
 # If frei0r is absent the scheduler falls back to CLEAN or TV.
@@ -55,12 +86,14 @@ BROLL_HALFTONE_LOOK_PRESET_FF_FILTER = (
 )
 
 # Caps per output video
-_BROLL_CAP_CLEAN = 0.60
-_BROLL_CAP_TV = 0.25
-_BROLL_CAP_HALFTONE = 0.15
+_BROLL_CAP_CLEAN = 0.50
+_BROLL_CAP_TV = 0.20
+_BROLL_CAP_HEAVY = 0.20
+_BROLL_CAP_HALFTONE = 0.10
 
-# Runtime flag: set to True on first successful frei0r probe (or False if absent)
+# Runtime flags: set on first probe (or False if absent)
 _frei0r_available: Optional[bool] = None
+_heavy_filters_available: Optional[bool] = None
 
 
 def _probe_frei0r() -> bool:
@@ -79,6 +112,27 @@ def _probe_frei0r() -> bool:
     return _frei0r_available
 
 
+def _probe_heavy_filters() -> bool:
+    """Return True if ffmpeg supports the filters used by the HEAVY preset.
+
+    Checks for: rgbashift, drawgrid, gblur, zoompan, boxblur.
+    Falls back to CLEAN if any are missing.
+    """
+    global _heavy_filters_available
+    if _heavy_filters_available is not None:
+        return _heavy_filters_available
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-filters"],
+            capture_output=True, text=True, timeout=5,
+        )
+        needed = ["rgbashift", "drawgrid", "gblur", "zoompan", "boxblur"]
+        _heavy_filters_available = all(f in result.stdout for f in needed)
+    except Exception:
+        _heavy_filters_available = False
+    return _heavy_filters_available
+
+
 def choose_broll_look(
     clip_key: str,
     clip_index: int,
@@ -90,28 +144,34 @@ def choose_broll_look(
 
     Rules:
       - Deterministic per clip_key (sha1 hash).
-      - At most 60% CLEAN, 25% TV, 15% HALFTONE per video.
+      - Caps: CLEAN 50%, TV 20%, HEAVY 20%, HALFTONE 10%.
       - Never two consecutive non-CLEAN looks.
-      - Falls back to CLEAN when caps are exceeded or frei0r is missing.
+      - Falls back to CLEAN when caps are exceeded or runtime filters missing.
     """
     halftone_ok = _probe_frei0r()
+    heavy_ok = _probe_heavy_filters()
 
     # Deterministic bucket from clip key
     digest = int(hashlib.sha1(clip_key.encode()).hexdigest(), 16)
     bucket = digest % 100  # 0-99
 
-    if bucket < 60:
+    if bucket < 50:
         preferred = "CLEAN"
-    elif bucket < 85:
+    elif bucket < 70:
         preferred = "TV"
+    elif bucket < 90:
+        preferred = "HEAVY" if heavy_ok else "CLEAN"
     else:
-        preferred = "HALFTONE" if halftone_ok else "CLEAN"
+        preferred = "HALFTONE" if halftone_ok else ("HEAVY" if heavy_ok else "CLEAN")
 
     # Enforce caps
     max_tv = max(1, int(total_clips * _BROLL_CAP_TV + 0.5))
+    max_heavy = max(1, int(total_clips * _BROLL_CAP_HEAVY + 0.5)) if heavy_ok else 0
     max_halftone = max(1, int(total_clips * _BROLL_CAP_HALFTONE + 0.5)) if halftone_ok else 0
 
     if preferred == "TV" and counts.get("TV", 0) >= max_tv:
+        preferred = "CLEAN"
+    if preferred == "HEAVY" and counts.get("HEAVY", 0) >= max_heavy:
         preferred = "CLEAN"
     if preferred == "HALFTONE" and counts.get("HALFTONE", 0) >= max_halftone:
         preferred = "CLEAN"
@@ -190,9 +250,28 @@ def build_broll_filtergraph_entries(
             f"tpad=stop_mode=clone:stop_duration={dur:.3f}[{raw_label}]"
         )
         # Stage 2: apply look preset -> [b{i}_look]
-        filters.append(
-            f"[{raw_label}]{look_filter}[{look_label}]"
-        )
+        if look == "HEAVY":
+            # HEAVY gets extra stages: halation (split/blur/blend) + zoompan
+            graded = f"b{idx}_graded"
+            halo_main = f"b{idx}_hmain"
+            halo_src = f"b{idx}_hsrc"
+            halo_blur = f"b{idx}_hblur"
+            glow = f"b{idx}_glow"
+            # 2a: base heavy filter chain
+            filters.append(f"[{raw_label}]{look_filter}[{graded}]")
+            # 2b: halation — split, blur one copy, screen-blend back
+            filters.append(f"[{graded}]split[{halo_main}][{halo_src}]")
+            filters.append(f"[{halo_src}]{_HEAVY_HALATION_BLUR}[{halo_blur}]")
+            filters.append(
+                f"[{halo_main}][{halo_blur}]blend="
+                f"all_mode=screen:all_opacity={_HEAVY_HALATION_BLEND_OPACITY}[{glow}]"
+            )
+            # 2c: zoompan micro push-in (preserves duration: d=1)
+            filters.append(f"[{glow}]{_HEAVY_ZOOMPAN_EXPR}[{look_label}]")
+        else:
+            filters.append(
+                f"[{raw_label}]{look_filter}[{look_label}]"
+            )
         # Stage 3: composite [b{i}_look] (NOT [b{i}_raw]) onto running chain
         filters.append(
             f"{last_label}[{look_label}]overlay="
