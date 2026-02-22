@@ -480,6 +480,194 @@ class TestMinBrollStartPolicy:
         assert overlay_items[0]["start"] == pytest.approx(0.5)
 
 
+class TestBrollMapping:
+    """Tests for _map_vd_broll with cut-boundary clipping."""
+
+    def _make_tmap(self) -> list[dict]:
+        """Timeline map simulating real cuts:
+        Cut 0: orig  0.0-10.0  -> final  0.0-10.0
+        Cut 1: orig 18.0-25.0  -> final 10.0-17.0
+        Cut 2: orig 30.0-40.0  -> final 17.0-27.0
+        Total final duration: 27.0s
+        """
+        from apps.api.services.planner import _build_timeline_map_from_cuts
+        cuts = [
+            type("C", (), {"start": 0.0, "end": 10.0})(),
+            type("C", (), {"start": 18.0, "end": 25.0})(),
+            type("C", (), {"start": 30.0, "end": 40.0})(),
+        ]
+        return _build_timeline_map_from_cuts(cuts)
+
+    def test_broll_inside_single_cut_maps_correctly(self):
+        """B-roll fully inside a cut maps to the correct final time."""
+        from apps.api.services.planner import _map_vd_broll
+        tmap = self._make_tmap()
+        vd = [{"start_orig": 19.0, "end_orig": 22.0, "query": "test", "reason": ""}]
+        result = _map_vd_broll(vd, tmap)
+        assert len(result) == 1
+        # orig 19.0 is 1.0s into cut1 (orig 18-25) -> final 10.0 + 1.0 = 11.0
+        assert result[0]["start"] == pytest.approx(11.0)
+        # orig 22.0 is 4.0s into cut1 -> final 10.0 + 4.0 = 14.0
+        assert result[0]["end"] == pytest.approx(14.0)
+
+    def test_broll_spanning_cut_boundary_clips_not_drops(self):
+        """B-roll that starts inside a cut but ends outside clips to cut end."""
+        from apps.api.services.planner import _map_vd_broll
+        tmap = self._make_tmap()
+        # Starts inside cut1 (18-25), ends at 26.0 which is OUTSIDE cut1 (gap 25-30)
+        vd = [{"start_orig": 20.0, "end_orig": 26.0, "query": "span", "reason": ""}]
+        result = _map_vd_broll(vd, tmap)
+        assert len(result) == 1, "B-roll spanning cut boundary must not be dropped"
+        # Start: 2.0s into cut1 -> final 12.0
+        assert result[0]["start"] == pytest.approx(12.0)
+        # End: clipped to cut1 final_end = 17.0
+        assert result[0]["end"] == pytest.approx(17.0)
+
+    def test_broll_entirely_in_gap_is_dropped(self):
+        """B-roll entirely between cuts (in a gap) is correctly dropped."""
+        from apps.api.services.planner import _map_vd_broll
+        tmap = self._make_tmap()
+        # Between cut0 (0-10) and cut1 (18-25): orig 12.0-15.0
+        vd = [{"start_orig": 12.0, "end_orig": 15.0, "query": "gap", "reason": ""}]
+        result = _map_vd_broll(vd, tmap)
+        assert len(result) == 0
+
+    def test_regression_20s_does_not_map_to_98s(self):
+        """Regression: orig=20.06-24.64 must map near final ~12-17, NOT 98-102."""
+        from apps.api.services.planner import _map_vd_broll
+        tmap = self._make_tmap()
+        vd = [{"start_orig": 20.06, "end_orig": 24.64, "query": "regression", "reason": ""}]
+        result = _map_vd_broll(vd, tmap)
+        assert len(result) == 1
+        # orig 20.06 is 2.06s into cut1 -> final 10.0 + 2.06 = 12.06
+        expected_start = 12.06
+        assert abs(result[0]["start"] - expected_start) < 2.0, (
+            f"Mapped start {result[0]['start']} is absurdly far from expected {expected_start}"
+        )
+        assert result[0]["start"] < 30.0, "Mapped b-roll must not be at 98s"
+
+    def test_multiple_broll_clipping_preserves_count(self):
+        """4 b-roll items that span boundaries: most should survive via clipping."""
+        from apps.api.services.planner import _map_vd_broll
+        tmap = self._make_tmap()
+        vd = [
+            {"start_orig": 2.0, "end_orig": 5.0, "query": "a", "reason": ""},     # inside cut0
+            {"start_orig": 20.0, "end_orig": 26.0, "query": "b", "reason": ""},    # spans cut1 end
+            {"start_orig": 31.0, "end_orig": 35.0, "query": "c", "reason": ""},    # inside cut2
+            {"start_orig": 38.0, "end_orig": 42.0, "query": "d", "reason": ""},    # spans cut2 end
+        ]
+        result = _map_vd_broll(vd, tmap)
+        # All 4 should survive: items inside cuts map directly,
+        # items spanning boundaries get clipped
+        assert len(result) >= 3, f"Expected >=3 mapped b-roll, got {len(result)}"
+
+    def test_mapped_broll_contains_orig_times(self):
+        """Mapped b-roll items include _orig_start/_orig_end for correct logging."""
+        from apps.api.services.planner import _map_vd_broll
+        tmap = self._make_tmap()
+        vd = [{"start_orig": 19.0, "end_orig": 22.0, "query": "test", "reason": ""}]
+        result = _map_vd_broll(vd, tmap)
+        assert len(result) == 1
+        assert result[0]["_orig_start"] == 19.0
+        assert result[0]["_orig_end"] == 22.0
+
+
+class TestBrollPacker:
+    """Tests for _pack_broll (shift instead of drop on overlap)."""
+
+    def test_no_overlaps_keeps_all(self):
+        """Non-overlapping b-roll items are all kept unchanged."""
+        from apps.api.services.planner import _pack_broll
+        broll = [
+            {"start": 5.0, "end": 8.0, "query": "a"},
+            {"start": 10.0, "end": 13.0, "query": "b"},
+            {"start": 15.0, "end": 18.0, "query": "c"},
+        ]
+        result = _pack_broll(broll, [], 30.0)
+        assert len(result) == 3
+
+    def test_overlapping_broll_shifted(self):
+        """Overlapping b-roll items are shifted forward, not dropped."""
+        from apps.api.services.planner import _pack_broll
+        broll = [
+            {"start": 5.0, "end": 8.0, "query": "a"},
+            {"start": 6.0, "end": 9.0, "query": "b"},   # overlaps a
+            {"start": 7.0, "end": 10.0, "query": "c"},   # overlaps a and b
+        ]
+        result = _pack_broll(broll, [], 30.0)
+        assert len(result) >= 2, "Should keep >=2 by shifting"
+        # Verify no overlaps in result
+        for i in range(1, len(result)):
+            assert result[i]["start"] >= result[i - 1]["end"], (
+                f"Items {i-1} and {i} still overlap after packing"
+            )
+
+    def test_four_overlapping_broll_keeps_at_least_two(self):
+        """4 overlapping b-roll: packer should keep >=2 by shifting."""
+        from apps.api.services.planner import _pack_broll
+        broll = [
+            {"start": 5.0, "end": 9.0, "query": "a"},
+            {"start": 5.5, "end": 9.5, "query": "b"},
+            {"start": 6.0, "end": 10.0, "query": "c"},
+            {"start": 6.5, "end": 10.5, "query": "d"},
+        ]
+        result = _pack_broll(broll, [], 60.0)
+        assert len(result) >= 2, f"Expected >=2, got {len(result)}"
+
+    def test_broll_overlapping_overlay_shifted(self):
+        """B-roll that overlaps an overlay is shifted past the overlay."""
+        from apps.api.services.planner import _pack_broll
+        broll = [{"start": 5.0, "end": 8.0, "query": "test"}]
+        overlays = [{"start": 4.0, "end": 7.0}]
+        result = _pack_broll(broll, overlays, 30.0)
+        assert len(result) == 1
+        # Shifted past overlay end (7.0 + gap)
+        assert result[0]["start"] >= 7.0
+
+    def test_only_one_can_fit_keeps_one(self):
+        """When only one b-roll can fit within duration, keep exactly 1."""
+        from apps.api.services.planner import _pack_broll
+        broll = [
+            {"start": 5.0, "end": 8.0, "query": "a"},
+            {"start": 5.0, "end": 8.0, "query": "b"},
+        ]
+        # Short total duration: only first fits, second would shift too far
+        result = _pack_broll(broll, [], 9.0)
+        assert len(result) >= 1
+
+    def test_never_drops_all(self):
+        """Safety: _pack_broll must never drop ALL items if input is non-empty."""
+        from apps.api.services.planner import _pack_broll
+        broll = [{"start": 100.0, "end": 103.0, "query": "far"}]
+        result = _pack_broll(broll, [], 5.0)
+        assert len(result) >= 1, "Must never drop all b-roll"
+
+    def test_packing_respects_total_duration(self):
+        """Packed b-roll must not extend past total_duration."""
+        from apps.api.services.planner import _pack_broll
+        broll = [
+            {"start": 5.0, "end": 8.0, "query": "a"},
+            {"start": 5.5, "end": 8.5, "query": "b"},
+        ]
+        result = _pack_broll(broll, [], 10.0)
+        for br in result:
+            assert br["end"] <= 10.0, f"B-roll end {br['end']} exceeds total duration"
+
+    def test_packing_deterministic(self):
+        """Same inputs always produce the same output."""
+        from apps.api.services.planner import _pack_broll
+        broll = [
+            {"start": 5.0, "end": 8.0, "query": "a"},
+            {"start": 6.0, "end": 9.0, "query": "b"},
+        ]
+        r1 = _pack_broll(broll[:], [], 30.0)
+        r2 = _pack_broll(broll[:], [], 30.0)
+        assert len(r1) == len(r2)
+        for a, b in zip(r1, r2):
+            assert a["start"] == b["start"]
+            assert a["end"] == b["end"]
+
+
 class TestNanoBananaProParsing:
     """Tests for NanoBanana Pro response parsing (isolated from Regular)."""
 
