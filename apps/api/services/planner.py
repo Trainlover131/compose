@@ -267,111 +267,6 @@ def _enforce_min_broll_start(
 
 
 # ===================================================================
-# B-roll packing (avoid dropping on overlap)
-# ===================================================================
-
-_BROLL_PACK_GAP = 0.1       # seconds gap between packed items
-_BROLL_PACK_MAX_SHIFT = 6.0  # max seconds a b-roll can be shifted forward
-
-
-def _pack_broll(
-    broll_items: list[dict],
-    overlay_items: list[dict],
-    total_duration: float,
-) -> list[dict]:
-    """Pack b-roll items to avoid overlaps instead of dropping them.
-
-    For each b-roll (sorted by intended start time):
-      - If it overlaps any overlay or previously-kept b-roll, shift its start
-        to just after the conflict ends (+ GAP).
-      - Maintain original duration; clamp end to total_duration.
-      - If shifting requires > MAX_SHIFT seconds or cannot fit, drop the item.
-      - Never drop ALL b-roll if at least one can fit.
-
-    Returns the packed list (may be shorter than input but >= 1 when possible).
-    """
-    if not broll_items:
-        return broll_items
-
-    broll_items = sorted(broll_items, key=lambda b: b["start"])
-
-    # Build conflict intervals from overlays (we never move overlays)
-    overlay_intervals: list[tuple[float, float]] = []
-    for ov in overlay_items:
-        overlay_intervals.append((ov["start"], ov["end"]))
-
-    kept: list[dict] = []
-    dropped = 0
-    shifted = 0
-    max_shift_used = 0.0
-
-    for br in broll_items:
-        orig_start = br["start"]
-        dur = br["end"] - br["start"]
-        s = orig_start
-
-        # Build list of conflict end-times
-        conflicts = []
-        for os_, oe_ in overlay_intervals:
-            if s < oe_ and (s + dur) > os_:
-                conflicts.append(oe_)
-        for kb in kept:
-            if s < kb["end"] and (s + dur) > kb["start"]:
-                conflicts.append(kb["end"])
-
-        # Shift forward past all conflicts
-        if conflicts:
-            s = max(conflicts) + _BROLL_PACK_GAP
-
-        # Re-check after initial shift (new position might conflict again)
-        max_iter = 10
-        for _ in range(max_iter):
-            new_conflicts = []
-            for os_, oe_ in overlay_intervals:
-                if s < oe_ and (s + dur) > os_:
-                    new_conflicts.append(oe_)
-            for kb in kept:
-                if s < kb["end"] and (s + dur) > kb["start"]:
-                    new_conflicts.append(kb["end"])
-            if not new_conflicts:
-                break
-            s = max(new_conflicts) + _BROLL_PACK_GAP
-
-        shift_amount = s - orig_start
-        e = s + dur
-
-        # Clamp to total duration
-        if e > total_duration:
-            e = total_duration
-        if e <= s:
-            dropped += 1
-            continue
-
-        # Enforce max shift
-        if shift_amount > _BROLL_PACK_MAX_SHIFT:
-            dropped += 1
-            continue
-
-        if shift_amount > 0:
-            shifted += 1
-            max_shift_used = max(max_shift_used, shift_amount)
-
-        kept.append(dict(br, start=round(s, 3), end=round(e, 3)))
-
-    # Safety: never drop ALL if at least one can fit
-    if not kept and broll_items:
-        best = broll_items[0]
-        kept = [dict(best)]
-
-    logger.info(
-        "B-roll packer: kept=%d dropped=%d shifted=%d max_shift_used=%.3f",
-        len(kept), dropped, shifted, max_shift_used,
-    )
-
-    return kept
-
-
-# ===================================================================
 # NanoBanana image generation (best-effort, never breaks pipeline)
 # ===================================================================
 
@@ -1105,37 +1000,14 @@ def _map_vd_broll(
     """Map VisualDirector b-roll from original to final timeline.
 
     Converts start_orig/end_orig -> start/end and formats for EditPlan.
-    Clips items that span cut boundaries (same logic as overlay mapping)
-    instead of dropping them.  Only drops if entirely outside all cuts.
+    Drops items that fall entirely outside kept cuts.
     """
     mapped: list[dict] = []
-    for idx, br in enumerate(vd_broll):
-        orig_s = br["start_orig"]
-        orig_e = br["end_orig"]
-
-        fs = _map_time(orig_s, timeline_map)
-        fe = _map_time(orig_e, timeline_map)
-
-        # Clip to cut boundary when one end falls in a gap (between cuts)
-        if fs is not None and fe is None:
-            for entry in timeline_map:
-                if entry["orig_start"] <= orig_s <= entry["orig_end"]:
-                    fe = entry["final_end"]
-                    break
-        elif fs is None and fe is not None:
-            for entry in timeline_map:
-                if entry["orig_start"] <= orig_e <= entry["orig_end"]:
-                    fs = entry["final_start"]
-                    break
-
+    for br in vd_broll:
+        fs = _map_time(br["start_orig"], timeline_map)
+        fe = _map_time(br["end_orig"], timeline_map)
         if fs is None or fe is None or fe <= fs:
-            logger.info(
-                "B-roll mapping drop: idx=%d orig=%.3f-%.3f "
-                "mapped_start=%s mapped_end=%s (outside all cuts)",
-                idx, orig_s, orig_e, fs, fe,
-            )
             continue
-
         query = br["query"]
         keywords = query.split()[:3]
         mapped.append({
@@ -1145,8 +1017,6 @@ def _map_vd_broll(
             "keywords": keywords,
             "source": "pexels",
             "notes": br.get("reason", ""),
-            "_orig_start": orig_s,
-            "_orig_end": orig_e,
         })
     return mapped
 
@@ -1154,22 +1024,13 @@ def _map_vd_broll(
 def _log_mapping_examples(
     label: str, orig_items: list[dict], mapped_items: list[dict],
 ) -> None:
-    """Log first 3 mapped items with their embedded orig times.
-
-    Uses _orig_start/_orig_end stored during mapping (when available)
-    so the log pairs each mapped item with the *correct* original item
-    even when some items were dropped during mapping.
-    """
-    for i, m in enumerate(mapped_items[:3]):
-        orig_s = m.get("_orig_start", 0)
-        orig_e = m.get("_orig_end", 0)
-        # Fallback to index-based pairing for overlays (which don't store _orig_*)
-        if orig_s == 0 and orig_e == 0 and i < len(orig_items):
-            orig_s = orig_items[i].get("start_orig", 0)
-            orig_e = orig_items[i].get("end_orig", 0)
+    """Log first 3 items before/after timeline mapping for debugging."""
+    for i, (o, m) in enumerate(zip(orig_items[:3], mapped_items[:3])):
         logger.info(
             "VisualDirector %s [%d]: orig=%.3f-%.3f -> final=%.3f-%.3f",
-            label, i, orig_s, orig_e, m["start"], m["end"],
+            label, i,
+            o.get("start_orig", 0), o.get("end_orig", 0),
+            m["start"], m["end"],
         )
 
 
@@ -1366,18 +1227,13 @@ def plan_edit(
             if vd_broll:
                 broll_inserts = _map_vd_broll(vd_broll, tmap)
                 _log_mapping_examples("broll", vd_broll, broll_inserts)
-                # Compute total final duration for packing bounds
-                final_dur = tmap[-1]["final_end"] if tmap else video_duration
-                pre_map_count = len(broll_inserts)
-                broll_inserts = _pack_broll(
-                    broll_inserts, overlay_items, final_dur,
-                )
+                broll_inserts = _enforce_nonoverlap(broll_inserts)
                 pre_count = len(broll_inserts)
                 broll_inserts = _enforce_min_broll_start(broll_inserts, tmap)
                 logger.info(
                     "VisualDirector broll after mapping+nonoverlap: %d, "
-                    "after min-start filter: %d (pre-map: %d)",
-                    pre_count, len(broll_inserts), pre_map_count,
+                    "after min-start filter: %d",
+                    pre_count, len(broll_inserts),
                 )
 
         except Exception as e:
