@@ -27,6 +27,7 @@ from apps.api.config import (
 )
 from apps.api.models.presets import get_preset
 from apps.api.models.schemas import EditPlan
+from apps.api.services.overlay_qc import detect_checkerboard_background
 
 logger = logging.getLogger(__name__)
 
@@ -583,6 +584,26 @@ def _generate_overlay_image_from_item(overlay: dict) -> Optional[str]:
         result = _nanobanana_call_and_parse(
             _NB_ENDPOINT_REGULAR, compiled_prompt, cached, False,
         )
+
+    # --- Overlay QC: checkerboard detection + one retry ---
+    if result is not None and detect_checkerboard_background(result):
+        logger.info(
+            "Overlay QC: checkerboard detected; regenerating once "
+            "(endpoint=%s)", endpoint_label,
+        )
+        # Remove the bad cached file so _nanobanana_call_and_parse writes fresh
+        try:
+            cached.unlink(missing_ok=True)
+        except OSError:
+            pass
+        result = _nanobanana_call_and_parse(
+            endpoint, compiled_prompt, cached, is_pro,
+        )
+        if result is not None and detect_checkerboard_background(result):
+            logger.info(
+                "Overlay QC: checkerboard still present after retry; "
+                "keeping image anyway"
+            )
 
     return result
 

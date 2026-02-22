@@ -1,11 +1,13 @@
 """Render compiler: converts EditPlan -> deterministic FFmpeg commands."""
 
+import hashlib
 import json
 import logging
 import os
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 from apps.api.config import MUSIC_DIR, MAX_RENDER_TIMEOUT_SEC
 from apps.api.models.schemas import EditPlan
@@ -14,6 +16,110 @@ logger = logging.getLogger(__name__)
 
 # Maximum chars of FFmpeg stderr to include in error messages
 _MAX_STDERR_CHARS = 2000
+
+# ---------------------------------------------------------------------------
+# B-roll look presets (video filters applied to b-roll clips ONLY)
+# ---------------------------------------------------------------------------
+BROLL_LOOK_PRESET_FF_FILTER = (
+    "eq=contrast=1.06:brightness=0.02:saturation=1.12,"
+    "unsharp=5:5:0.5:5:5:0.0,"
+    "colorbalance=rs=0.04:gs=-0.02:bs=-0.05:rh=0.03:gh=-0.01:bh=-0.04,"
+    "noise=c0s=3:c0f=t"
+)
+
+BROLL_TV_LOOK_PRESET_FF_FILTER = (
+    "eq=contrast=1.12:brightness=-0.01:saturation=0.85,"
+    "unsharp=5:5:0.7:5:5:0.0,"
+    "colorbalance=rs=0.02:gs=0.02:bs=0.06:rh=-0.02:gh=0.0:bh=0.05,"
+    "noise=c0s=8:c0f=t,"
+    "vignette=PI/5"
+)
+
+# HALFTONE uses frei0r — only defined when the filter is available at runtime.
+# If frei0r is absent the scheduler falls back to CLEAN or TV.
+BROLL_HALFTONE_LOOK_PRESET_FF_FILTER = (
+    "eq=contrast=1.06:brightness=0.02:saturation=1.12,"
+    "format=gray,eq=contrast=1.25:brightness=0.00,"
+    "frei0r=filter_name=halftone:filter_params=0.55|0.70|0.10,"
+    "format=rgba,colorchannelmixer=aa=0.85"
+)
+
+# Caps per output video
+_BROLL_CAP_CLEAN = 0.60
+_BROLL_CAP_TV = 0.25
+_BROLL_CAP_HALFTONE = 0.15
+
+# Runtime flag: set to True on first successful frei0r probe (or False if absent)
+_frei0r_available: Optional[bool] = None
+
+
+def _probe_frei0r() -> bool:
+    """Return True if the runtime ffmpeg supports frei0r filters."""
+    global _frei0r_available
+    if _frei0r_available is not None:
+        return _frei0r_available
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-filters"],
+            capture_output=True, text=True, timeout=5,
+        )
+        _frei0r_available = "frei0r" in result.stdout
+    except Exception:
+        _frei0r_available = False
+    return _frei0r_available
+
+
+def choose_broll_look(
+    clip_key: str,
+    clip_index: int,
+    prev_look: Optional[str],
+    total_clips: int,
+    counts: dict[str, int],
+) -> str:
+    """Choose a deterministic look for a b-roll clip.
+
+    Rules:
+      - Deterministic per clip_key (sha1 hash).
+      - At most 60% CLEAN, 25% TV, 15% HALFTONE per video.
+      - Never two consecutive non-CLEAN looks.
+      - Falls back to CLEAN when caps are exceeded or frei0r is missing.
+    """
+    halftone_ok = _probe_frei0r()
+
+    # Deterministic bucket from clip key
+    digest = int(hashlib.sha1(clip_key.encode()).hexdigest(), 16)
+    bucket = digest % 100  # 0-99
+
+    if bucket < 60:
+        preferred = "CLEAN"
+    elif bucket < 85:
+        preferred = "TV"
+    else:
+        preferred = "HALFTONE" if halftone_ok else "CLEAN"
+
+    # Enforce caps
+    max_tv = max(1, int(total_clips * _BROLL_CAP_TV + 0.5))
+    max_halftone = max(1, int(total_clips * _BROLL_CAP_HALFTONE + 0.5)) if halftone_ok else 0
+
+    if preferred == "TV" and counts.get("TV", 0) >= max_tv:
+        preferred = "CLEAN"
+    if preferred == "HALFTONE" and counts.get("HALFTONE", 0) >= max_halftone:
+        preferred = "CLEAN"
+
+    # No two consecutive non-CLEAN
+    if preferred != "CLEAN" and prev_look is not None and prev_look != "CLEAN":
+        preferred = "CLEAN"
+
+    return preferred
+
+
+def _broll_filter_for_look(look: str) -> str:
+    """Return the FFmpeg filter string for the given b-roll look."""
+    if look == "TV":
+        return BROLL_TV_LOOK_PRESET_FF_FILTER
+    if look == "HALFTONE":
+        return BROLL_HALFTONE_LOOK_PRESET_FF_FILTER
+    return BROLL_LOOK_PRESET_FF_FILTER
 
 def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subprocess.CompletedProcess:
     """Run an FFmpeg command with proper error capture.
@@ -356,13 +462,29 @@ def compile_render(
         input_index = 1  # 0 is base; b-roll start at 1
 
         # ---- B-ROLL FULLSCREEN CUTAWAYS ----
+        broll_look_counts: dict[str, int] = {}
+        prev_broll_look: Optional[str] = None
+        total_broll = len(broll_clips)
+
         for idx, bc in enumerate(broll_clips):
             broll_idx = input_index
             input_index += 1
 
             prep = f"br{idx}"
+            graded = f"brg{idx}"
             out = f"vb{idx}"
             dur = bc["end"] - bc["start"]
+
+            # Choose deterministic look for this clip
+            clip_key = bc.get("path", f"broll_{idx}")
+            look = choose_broll_look(
+                clip_key, idx, prev_broll_look, total_broll, broll_look_counts,
+            )
+            broll_look_counts[look] = broll_look_counts.get(look, 0) + 1
+            prev_broll_look = look
+            look_filter = _broll_filter_for_look(look)
+
+            logger.info("B-roll look=%s clip=%d", look.lower(), idx)
 
             filters.append(
                 f"[{broll_idx}:v]trim=duration={dur:.3f},"
@@ -371,8 +493,12 @@ def compile_render(
                 f"setpts=PTS-STARTPTS+{bc['start']:.3f}/TB,"
                 f"tpad=stop_mode=clone:stop_duration={dur:.3f}[{prep}]"
             )
+            # Apply b-roll look preset
             filters.append(
-                f"{last_label}[{prep}]overlay="
+                f"[{prep}]{look_filter}[{graded}]"
+            )
+            filters.append(
+                f"{last_label}[{graded}]overlay="
                 f"enable='between(t,{bc['start']:.3f},{bc['end']:.3f})'[{out}]"
             )
             last_label = f"[{out}]"
