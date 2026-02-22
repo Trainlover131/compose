@@ -14,6 +14,7 @@ from apps.api.services.render_compiler import (
     BROLL_LOOK_PRESET_FF_FILTER,
     BROLL_TV_LOOK_PRESET_FF_FILTER,
     BROLL_HEAVY_FILM_FF_FILTER,
+    BROLL_DEFAULT_FILM_FF_FILTER,
     choose_broll_look,
     _broll_filter_for_look,
     build_broll_filtergraph_entries,
@@ -186,49 +187,30 @@ class TestCheckerboardRegeneration:
 # ====================================================================
 
 class TestBrollLookChoice:
-    """Tests for choose_broll_look determinism and cap enforcement."""
+    """Tests for choose_broll_look: default is always DEFAULT_FILM."""
+
+    def test_default_is_always_default_film(self):
+        """Every clip gets DEFAULT_FILM when no user look is specified."""
+        for i in range(20):
+            look = choose_broll_look(f"clip_{i}", i, None, 20, {})
+            assert look == "DEFAULT_FILM"
 
     def test_deterministic_same_key(self):
         """Same clip_key always produces the same look."""
         counts: dict[str, int] = {}
         look1 = choose_broll_look("video_abc.mp4", 0, None, 10, dict(counts))
         look2 = choose_broll_look("video_abc.mp4", 0, None, 10, dict(counts))
-        assert look1 == look2
+        assert look1 == look2 == "DEFAULT_FILM"
 
-    def test_returns_valid_look(self):
-        """Look is always one of CLEAN, TV, HEAVY, HALFTONE."""
-        for i in range(20):
-            look = choose_broll_look(f"clip_{i}", i, None, 20, {})
-            assert look in ("CLEAN", "TV", "HEAVY", "HALFTONE")
-
-    def test_no_consecutive_non_clean(self):
-        """Two consecutive non-CLEAN looks are prevented."""
+    def test_no_per_clip_variety(self):
+        """All clips receive the same look — no mixing of CLEAN/TV/HEAVY."""
         counts: dict[str, int] = {}
         prev: str | None = None
         for i in range(50):
             look = choose_broll_look(f"key_{i}", i, prev, 50, counts)
-            if prev is not None and prev != "CLEAN":
-                assert look == "CLEAN", (
-                    f"clip {i}: got {look} after {prev} (should be CLEAN)"
-                )
+            assert look == "DEFAULT_FILM"
             counts[look] = counts.get(look, 0) + 1
             prev = look
-
-    def test_caps_enforced(self):
-        """TV, HEAVY, and HALFTONE stay within their percentage caps."""
-        counts: dict[str, int] = {}
-        prev: str | None = None
-        total = 20
-        for i in range(total):
-            look = choose_broll_look(f"cap_test_{i}", i, prev, total, counts)
-            counts[look] = counts.get(look, 0) + 1
-            prev = look
-
-        # TV <= ceil(20% of 20) = 4, HEAVY <= ceil(20% of 20) = 4
-        assert counts.get("TV", 0) <= max(1, int(total * 0.20 + 0.5))
-        assert counts.get("HEAVY", 0) <= max(1, int(total * 0.20 + 0.5))
-        # HALFTONE may be 0 if frei0r is unavailable
-        assert counts.get("HALFTONE", 0) <= max(1, int(total * 0.10 + 0.5))
 
 
 class TestBrollFilterForLook:
@@ -243,8 +225,12 @@ class TestBrollFilterForLook:
     def test_heavy_returns_heavy_preset(self):
         assert _broll_filter_for_look("HEAVY") == BROLL_HEAVY_FILM_FF_FILTER
 
-    def test_unknown_defaults_to_clean(self):
-        assert _broll_filter_for_look("UNKNOWN") == BROLL_LOOK_PRESET_FF_FILTER
+    def test_default_film_returns_default_film_preset(self):
+        assert _broll_filter_for_look("DEFAULT_FILM") == BROLL_DEFAULT_FILM_FF_FILTER
+
+    @patch("apps.api.services.render_compiler._generate_haiku_color_grade", return_value=None)
+    def test_unknown_falls_back_to_default_film(self, _mock_haiku):
+        assert _broll_filter_for_look("UNKNOWN") == BROLL_DEFAULT_FILM_FF_FILTER
 
 
 class TestBrollFiltergraphWiring:
@@ -282,6 +268,7 @@ class TestBrollFiltergraphWiring:
             build_broll_filtergraph_entries,
             BROLL_LOOK_PRESET_FF_FILTER,
             BROLL_TV_LOOK_PRESET_FF_FILTER,
+            BROLL_DEFAULT_FILM_FF_FILTER,
         )
         clips = self._two_clip_setup()
         filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
@@ -299,6 +286,7 @@ class TestBrollFiltergraphWiring:
             has_preset = (
                 BROLL_LOOK_PRESET_FF_FILTER in line
                 or BROLL_TV_LOOK_PRESET_FF_FILTER in line
+                or BROLL_DEFAULT_FILM_FF_FILTER in line
             )
             assert has_preset, f"Look filter for clip {i} has no known preset: {line}"
 
@@ -530,3 +518,34 @@ class TestHeavyFilmPreset:
         assert rh and bh
         assert abs(int(rh.group(1))) <= 5
         assert abs(int(bh.group(1))) <= 5
+
+
+class TestDefaultFilmPreset:
+    """Tests for the DEFAULT_FILM b-roll look (the new single default)."""
+
+    def test_default_chain_contains_eq(self):
+        assert "eq=contrast=1.20:saturation=0.96" in BROLL_DEFAULT_FILM_FF_FILTER
+
+    def test_default_chain_contains_colorbalance(self):
+        assert "colorbalance=rs=-0.040" in BROLL_DEFAULT_FILM_FF_FILTER
+
+    def test_default_chain_contains_curves(self):
+        assert "curves=master='0/0 0.75/0.76 0.90/0.88 1/0.95'" in BROLL_DEFAULT_FILM_FF_FILTER
+
+    def test_default_chain_contains_noise(self):
+        assert "noise=c0s=4:c0f=t+u" in BROLL_DEFAULT_FILM_FF_FILTER
+
+    def test_default_chain_contains_drawgrid(self):
+        assert "drawgrid=w=0:h=4:t=1:c=black@0.04" in BROLL_DEFAULT_FILM_FF_FILTER
+
+    def test_default_chain_contains_vignette(self):
+        assert "vignette=PI/6" in BROLL_DEFAULT_FILM_FF_FILTER
+
+    def test_default_chain_no_rgbashift(self):
+        assert "rgbashift" not in BROLL_DEFAULT_FILM_FF_FILTER
+
+    def test_default_chain_no_format_gray(self):
+        assert "format=gray" not in BROLL_DEFAULT_FILM_FF_FILTER
+
+    def test_default_chain_no_hue_desat(self):
+        assert "hue=s=0" not in BROLL_DEFAULT_FILM_FF_FILTER
