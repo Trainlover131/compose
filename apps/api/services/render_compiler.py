@@ -35,6 +35,16 @@ BROLL_TV_LOOK_PRESET_FF_FILTER = (
     "vignette=PI/5"
 )
 
+# HEAVY FILM preset: strong VHS/film look for b-roll only.
+# Placeholder — dialed up in a follow-up commit.
+BROLL_HEAVY_FILM_FF_FILTER = (
+    "eq=contrast=1.15:brightness=-0.02:saturation=0.80,"
+    "unsharp=5:5:0.8:5:5:0.0,"
+    "colorbalance=rs=0.03:gs=0.02:bs=0.07:rh=-0.03:gh=0.0:bh=0.06,"
+    "noise=c0s=12:c0f=t,"
+    "vignette=PI/4"
+)
+
 # HALFTONE uses frei0r — only defined when the filter is available at runtime.
 # If frei0r is absent the scheduler falls back to CLEAN or TV.
 BROLL_HALFTONE_LOOK_PRESET_FF_FILTER = (
@@ -119,7 +129,78 @@ def _broll_filter_for_look(look: str) -> str:
         return BROLL_TV_LOOK_PRESET_FF_FILTER
     if look == "HALFTONE":
         return BROLL_HALFTONE_LOOK_PRESET_FF_FILTER
+    if look == "HEAVY":
+        return BROLL_HEAVY_FILM_FF_FILTER
     return BROLL_LOOK_PRESET_FF_FILTER
+
+
+def build_broll_filtergraph_entries(
+    broll_clips: list[dict],
+    input_index_start: int,
+    last_label: str,
+) -> tuple[list[str], str, int]:
+    """Build filter_complex entries for b-roll clips with look presets.
+
+    Returns (filter_lines, final_last_label, next_input_index).
+
+    Each b-roll clip gets three labeled stages in the filtergraph:
+      [b{i}_raw]  — trim + scale + position
+      [b{i}_look] — look preset applied (CLEAN/TV/HALFTONE/HEAVY)
+      overlay composited using [b{i}_look] onto the running chain
+
+    This function is intentionally extractable for unit-testing: the
+    returned filter lines are exactly what goes into the final
+    filter_complex string.
+    """
+    filters: list[str] = []
+    broll_look_counts: dict[str, int] = {}
+    prev_broll_look: str | None = None
+    total_broll = len(broll_clips)
+    input_index = input_index_start
+
+    for idx, bc in enumerate(broll_clips):
+        broll_idx = input_index
+        input_index += 1
+
+        raw_label = f"b{idx}_raw"
+        look_label = f"b{idx}_look"
+        out_label = f"b{idx}_out"
+        dur = bc["end"] - bc["start"]
+
+        # Choose deterministic look for this clip
+        clip_key = bc.get("path", f"broll_{idx}")
+        look = choose_broll_look(
+            clip_key, idx, prev_broll_look, total_broll, broll_look_counts,
+        )
+        broll_look_counts[look] = broll_look_counts.get(look, 0) + 1
+        prev_broll_look = look
+        look_filter = _broll_filter_for_look(look)
+
+        logger.info(
+            "B-roll filtergraph wiring: broll_clip=%d look=%s label_in=[%s] label_out=[%s]",
+            idx, look.lower(), raw_label, look_label,
+        )
+
+        # Stage 1: trim + scale + position -> [b{i}_raw]
+        filters.append(
+            f"[{broll_idx}:v]trim=duration={dur:.3f},"
+            f"scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,"
+            f"setpts=PTS-STARTPTS+{bc['start']:.3f}/TB,"
+            f"tpad=stop_mode=clone:stop_duration={dur:.3f}[{raw_label}]"
+        )
+        # Stage 2: apply look preset -> [b{i}_look]
+        filters.append(
+            f"[{raw_label}]{look_filter}[{look_label}]"
+        )
+        # Stage 3: composite [b{i}_look] (NOT [b{i}_raw]) onto running chain
+        filters.append(
+            f"{last_label}[{look_label}]overlay="
+            f"enable='between(t,{bc['start']:.3f},{bc['end']:.3f})'[{out_label}]"
+        )
+        last_label = f"[{out_label}]"
+
+    return filters, last_label, input_index
 
 def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subprocess.CompletedProcess:
     """Run an FFmpeg command with proper error capture.
@@ -462,46 +543,10 @@ def compile_render(
         input_index = 1  # 0 is base; b-roll start at 1
 
         # ---- B-ROLL FULLSCREEN CUTAWAYS ----
-        broll_look_counts: dict[str, int] = {}
-        prev_broll_look: Optional[str] = None
-        total_broll = len(broll_clips)
-
-        for idx, bc in enumerate(broll_clips):
-            broll_idx = input_index
-            input_index += 1
-
-            prep = f"br{idx}"
-            graded = f"brg{idx}"
-            out = f"vb{idx}"
-            dur = bc["end"] - bc["start"]
-
-            # Choose deterministic look for this clip
-            clip_key = bc.get("path", f"broll_{idx}")
-            look = choose_broll_look(
-                clip_key, idx, prev_broll_look, total_broll, broll_look_counts,
-            )
-            broll_look_counts[look] = broll_look_counts.get(look, 0) + 1
-            prev_broll_look = look
-            look_filter = _broll_filter_for_look(look)
-
-            logger.info("B-roll look=%s clip=%d", look.lower(), idx)
-
-            filters.append(
-                f"[{broll_idx}:v]trim=duration={dur:.3f},"
-                f"scale=1080:1920:force_original_aspect_ratio=increase,"
-                f"crop=1080:1920,"
-                f"setpts=PTS-STARTPTS+{bc['start']:.3f}/TB,"
-                f"tpad=stop_mode=clone:stop_duration={dur:.3f}[{prep}]"
-            )
-            # Apply b-roll look preset
-            filters.append(
-                f"[{prep}]{look_filter}[{graded}]"
-            )
-            filters.append(
-                f"{last_label}[{graded}]overlay="
-                f"enable='between(t,{bc['start']:.3f},{bc['end']:.3f})'[{out}]"
-            )
-            last_label = f"[{out}]"
+        broll_filters, last_label, input_index = build_broll_filtergraph_entries(
+            broll_clips, input_index, last_label,
+        )
+        filters.extend(broll_filters)
 
         # ---- OVERLAY IMAGES (corner pops etc) ----
         # Each overlay image is scaled to a fraction of width (w), placed at (x,y)
