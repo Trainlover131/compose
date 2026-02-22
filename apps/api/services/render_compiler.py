@@ -18,229 +18,6 @@ logger = logging.getLogger(__name__)
 _MAX_STDERR_CHARS = 2000
 
 # ---------------------------------------------------------------------------
-# Motion effects system — purely visual animation for b-roll & overlays
-# ---------------------------------------------------------------------------
-
-# Allowed motion types
-_MOTION_TYPES = ("none", "fade", "slide", "pop", "micro_push", "subtle_wobble")
-
-# Default choices per asset type (subtle strength only)
-_DEFAULT_BROLL_MOTIONS = ("fade", "micro_push", "slide")
-_DEFAULT_OVERLAY_MOTIONS = ("fade", "slide", "pop")
-
-# Tokens that must NEVER appear in motion-generated filter fragments
-_FORBIDDEN_MOTION_TOKENS = ("fps=", "setpts=", "asetpts", "atempo", "adelay")
-
-
-def _motion_seed(path: str, start: float, end: float) -> int:
-    """Deterministic seed from clip identity — no true randomness."""
-    key = f"{path}:{start:.3f}:{end:.3f}"
-    return int(hashlib.md5(key.encode()).hexdigest(), 16)
-
-
-def _default_motion_for_broll(bc: dict) -> dict:
-    """Pick a deterministic subtle motion for a b-roll clip."""
-    seed = _motion_seed(bc.get("path", ""), bc["start"], bc["end"])
-    choice = _DEFAULT_BROLL_MOTIONS[seed % len(_DEFAULT_BROLL_MOTIONS)]
-    dirs = ("left", "right", "up", "down")
-    return {
-        "type": choice,
-        "in_dur": 0.15,
-        "out_dur": 0.15,
-        "dir": dirs[seed % len(dirs)] if choice == "slide" else None,
-        "strength": "subtle",
-        "seed": seed,
-    }
-
-
-def _default_motion_for_overlay(oi: dict) -> dict:
-    """Pick a deterministic subtle motion for an overlay image."""
-    seed = _motion_seed(oi.get("path", ""), oi["start"], oi["end"])
-    choice = _DEFAULT_OVERLAY_MOTIONS[seed % len(_DEFAULT_OVERLAY_MOTIONS)]
-    dirs = ("left", "right", "up", "down")
-    return {
-        "type": choice,
-        "in_dur": 0.12,
-        "out_dur": 0.12,
-        "dir": dirs[seed % len(dirs)] if choice == "slide" else None,
-        "strength": "subtle",
-        "seed": seed,
-    }
-
-
-def assert_no_forbidden_filters(fragment: str, context: str = "") -> None:
-    """Safety gate: raise if a motion fragment contains forbidden tokens."""
-    for tok in _FORBIDDEN_MOTION_TOKENS:
-        if tok in fragment:
-            raise ValueError(
-                f"Motion filter fragment contains forbidden token '{tok}' "
-                f"(context: {context}): {fragment[:200]}"
-            )
-
-
-def compile_motion_for_broll(
-    bc: dict, start: float, end: float,
-) -> str:
-    """Return filter tail to append AFTER the b-roll look filter.
-
-    Returns empty string when no motion or on error (fail-safe).
-    The returned string does NOT have a leading comma — caller must prepend
-    ',' when appending to an existing chain.
-    """
-    md = bc.get("motion") or _default_motion_for_broll(bc)
-    mtype = md.get("type", "none")
-
-    if mtype == "none":
-        return ""
-
-    dur = max(0.05, end - start)
-
-    try:
-        if mtype == "micro_push":
-            # Animated crop: zoom 1.00→1.02 via shrinking crop window
-            # e = 0.02 (2% push-in over clip duration)
-            e = 0.02
-            cw = f"iw/{1 + e:.4f}"
-            ch = f"ih/{1 + e:.4f}"
-            # pan: x goes from 0 → (iw - cw) over duration
-            progress = f"min(1\\,(t-{start:.3f})/{dur:.3f})"
-            cx = f"(iw-{cw})/2*{progress}"
-            cy = f"(ih-{ch})/2*{progress}"
-            frag = (
-                f"crop=w={cw}:h={ch}:x={cx}:y={cy}:eval=frame,"
-                f"scale=1080:1920"
-            )
-        elif mtype == "fade":
-            # B-roll is fullscreen — skip alpha fade; no-op is safest
-            return ""
-        elif mtype == "slide":
-            # Very subtle positional slide via crop offset
-            direction = md.get("dir", "left")
-            e = 0.02
-            cw = f"iw/{1 + e:.4f}"
-            ch = f"ih/{1 + e:.4f}"
-            progress = f"min(1\\,(t-{start:.3f})/{dur:.3f})"
-            if direction in ("left", "right"):
-                sign = "" if direction == "right" else f"(1-{progress})*"
-                cx = f"(iw-{cw})*{sign}{progress}" if direction == "right" else f"(iw-{cw})*(1-{progress})"
-                cy = f"(ih-{ch})/2"
-            else:
-                cx = f"(iw-{cw})/2"
-                sign_y = "" if direction == "down" else f"(1-{progress})*"
-                cy = f"(ih-{ch})*{sign_y}{progress}" if direction == "down" else f"(ih-{ch})*(1-{progress})"
-            frag = (
-                f"crop=w={cw}:h={ch}:x={cx}:y={cy}:eval=frame,"
-                f"scale=1080:1920"
-            )
-        else:
-            return ""
-
-        assert_no_forbidden_filters(frag, f"broll motion {mtype}")
-        logger.info("B-roll motion: type=%s start=%.3f end=%.3f", mtype, start, end)
-        return frag
-    except Exception as exc:
-        logger.warning("B-roll motion compile failed (falling back to none): %s", exc)
-        return ""
-
-
-def compile_motion_for_overlay(
-    oi: dict,
-    start: float,
-    end: float,
-    x0: int,
-    y0: int,
-    w_px: int,
-    h_px: int,
-) -> tuple[str, str, str]:
-    """Compile motion for an overlay image.
-
-    Returns (prep_filters, x_expr, y_expr).
-      - prep_filters: extra filters to append to the overlay prep chain
-        (after scale/format/setpts, before overlay).  May be empty string.
-      - x_expr: the x= value for the overlay filter (may be animated expr).
-      - y_expr: the y= value for the overlay filter (may be animated expr).
-    """
-    md = oi.get("motion") or _default_motion_for_overlay(oi)
-    mtype = md.get("type", "none")
-    in_dur = float(md.get("in_dur", 0.12))
-    out_dur = float(md.get("out_dur", 0.12))
-    dur = max(0.05, end - start)
-
-    # Defaults: static position, no extra prep
-    x_expr = str(x0)
-    y_expr = str(y0)
-    prep_parts: list[str] = []
-
-    try:
-        if mtype == "fade":
-            prep_parts.append(
-                f"fade=t=in:st=0:d={in_dur:.3f}:alpha=1,"
-                f"fade=t=out:st={max(0, dur - out_dur):.3f}:d={out_dur:.3f}:alpha=1"
-            )
-
-        elif mtype == "slide":
-            direction = md.get("dir", "left")
-            # Slide in over in_dur, then stay static
-            # progress: 0→1 over in_dur
-            progress = f"min(1\\,max(0\\,(t-{start:.3f})/{in_dur:.3f}))"
-            if direction == "left":
-                x_expr = f"({x0})+(-{w_px}*0.20)*(1-{progress})"
-            elif direction == "right":
-                x_expr = f"({x0})+({w_px}*0.20)*(1-{progress})"
-            elif direction == "up":
-                y_expr = f"({y0})+(-{int(1920 * 0.05)})*(1-{progress})"
-            elif direction == "down":
-                y_expr = f"({y0})+({int(1920 * 0.05)})*(1-{progress})"
-            # Also add a subtle fade
-            prep_parts.append(
-                f"fade=t=in:st=0:d={in_dur:.3f}:alpha=1,"
-                f"fade=t=out:st={max(0, dur - out_dur):.3f}:d={out_dur:.3f}:alpha=1"
-            )
-
-        elif mtype == "pop":
-            # Scale 0.94→1.00 over in_dur via eval=frame scale
-            progress = f"min(1\\,max(0\\,(t-{start:.3f})/{in_dur:.3f}))"
-            scale_f = f"(0.94+0.06*{progress})"
-            prep_parts.append(
-                f"scale=iw*{scale_f}:ih*{scale_f}:eval=frame"
-            )
-            # Also add fade
-            prep_parts.append(
-                f"fade=t=in:st=0:d={in_dur:.3f}:alpha=1,"
-                f"fade=t=out:st={max(0, dur - out_dur):.3f}:d={out_dur:.3f}:alpha=1"
-            )
-
-        elif mtype == "subtle_wobble":
-            # Small sinusoidal x/y offset: ±4px at ~0.7Hz
-            freq = 0.7
-            x_expr = f"({x0})+4*sin(2*PI*{freq:.2f}*(t-{start:.3f}))"
-            y_expr = f"({y0})+3*sin(2*PI*{freq:.2f}*(t-{start:.3f})+PI/3)"
-            prep_parts.append(
-                f"fade=t=in:st=0:d={in_dur:.3f}:alpha=1,"
-                f"fade=t=out:st={max(0, dur - out_dur):.3f}:d={out_dur:.3f}:alpha=1"
-            )
-
-        # mtype == "none" leaves defaults
-
-        prep_filters = ",".join(prep_parts)
-        if prep_filters:
-            assert_no_forbidden_filters(prep_filters, f"overlay motion {mtype}")
-        logger.info(
-            "Overlay motion: type=%s start=%.3f end=%.3f x=%s y=%s",
-            mtype, start, end, x_expr[:60], y_expr[:60],
-        )
-        return prep_filters, x_expr, y_expr
-
-    except Exception as exc:
-        logger.warning("Overlay motion compile failed (falling back to fade): %s", exc)
-        # Fail-safe: simple fade only
-        safe_prep = (
-            f"fade=t=in:st=0:d=0.12:alpha=1,"
-            f"fade=t=out:st={max(0, dur - 0.12):.3f}:d=0.12:alpha=1"
-        )
-        return safe_prep, str(x0), str(y0)
-
-# ---------------------------------------------------------------------------
 # B-roll look presets (video filters applied to b-roll clips ONLY)
 # ---------------------------------------------------------------------------
 BROLL_LOOK_PRESET_FF_FILTER = (
@@ -550,8 +327,6 @@ def build_broll_filtergraph_entries(
         # Stage 2: apply look preset -> [b{i}_look]
         if look == "HEAVY":
             # HEAVY gets extra stages: halation (split/blur/blend) + zoompan
-            # HEAVY already has its own micro push-in via zoompan — skip
-            # additional motion to avoid stacking.
             graded = f"b{idx}_graded"
             halo_main = f"b{idx}_hmain"
             halo_src = f"b{idx}_hsrc"
@@ -569,16 +344,9 @@ def build_broll_filtergraph_entries(
             # 2c: zoompan micro push-in (preserves duration: d=1)
             filters.append(f"[{glow}]{_HEAVY_ZOOMPAN_EXPR}[{look_label}]")
         else:
-            # Apply look filter + optional motion tail
-            motion_tail = compile_motion_for_broll(bc, bc["start"], bc["end"])
-            if motion_tail:
-                filters.append(
-                    f"[{raw_label}]{look_filter},{motion_tail}[{look_label}]"
-                )
-            else:
-                filters.append(
-                    f"[{raw_label}]{look_filter}[{look_label}]"
-                )
+            filters.append(
+                f"[{raw_label}]{look_filter}[{look_label}]"
+            )
         # Stage 3: composite [b{i}_look] (NOT [b{i}_raw]) onto running chain
         filters.append(
             f"{last_label}[{look_label}]overlay="
@@ -950,24 +718,17 @@ def compile_render(
 
             dur = max(0.05, oi["end"] - oi["start"])
 
-            # Compile motion for this overlay
-            motion_prep, x_expr, y_expr = compile_motion_for_overlay(
-                oi, oi["start"], oi["end"], x_px, y_px, w_px,
-                max(1, int(w_px * 1920 / 1080)),
+            # Prepare overlay stream: scale, ensure alpha, reset pts
+            prep = f"ov{j}"
+            filters.append(
+                f"[{ov_idx}:v]scale={w_px}:-1,format=rgba,"
+                f"setpts=PTS-STARTPTS[{prep}]"
             )
 
-            # Prepare overlay stream: scale, ensure alpha, reset pts + motion prep
-            prep = f"ov{j}"
-            prep_chain = f"[{ov_idx}:v]scale={w_px}:-1,format=rgba,setpts=PTS-STARTPTS"
-            if motion_prep:
-                prep_chain += f",{motion_prep}"
-            prep_chain += f"[{prep}]"
-            filters.append(prep_chain)
-
-            # Overlay with (possibly animated) x/y; enable window unchanged
+            # Simple on/off enable (fade can be added later)
             filters.append(
                 f"{last_label}[{prep}]overlay="
-                f"x={x_expr}:y={y_expr}:"
+                f"x={x_px}:y={y_px}:"
                 f"enable='between(t,{oi['start']:.3f},{oi['end']:.3f})'[{out}]"
             )
             last_label = f"[{out}]"
