@@ -36,36 +36,43 @@ BROLL_TV_LOOK_PRESET_FF_FILTER = (
     "vignette=PI/5"
 )
 
-# HEAVY FILM preset: strong VHS/film look for b-roll only.
+# HEAVY FILM preset: teal/orange "blockbuster" color-corrected film look.
 # Components (all built-in ffmpeg filters, no external deps):
-#   1) VHS softness:  boxblur=2:1 -> unsharp (mild blur + re-sharpen edges)
-#   2) Grain:         noise=c0s=18:c0f=t+u (heavy temporal+uniform grain)
-#   3) Flicker:       eq with sin(t) brightness modulation
-#   4) Scanlines:     drawgrid with thin dark lines every 4px
-#   5) Chroma bleed:  rgbashift horizontal red/blue shift
-#   6) Halation/glow: handled via split/overlay in build_broll_filtergraph_entries
-#   7) Zoom/pan:      zoompan micro push-in, handled in build_broll_filtergraph_entries
+#   1) Softness:     boxblur=1:1 -> unsharp (mild blur + re-sharpen edges)
+#   2) Color grade:  eq (contrast/sat) + colorbalance (shadows→teal, highlights→orange)
+#   3) Grain:        noise=c0s=10:c0f=t+u (neutral gray film grain)
+#   4) Flicker:      eq with sin(t) brightness modulation
+#   5) Scanlines:    drawgrid with thin dark lines every 4px
+#   6) Vignette:     faint black vignette
+#   7) Halation/glow: handled via split/overlay in build_broll_filtergraph_entries
+#   8) Zoom/pan:      zoompan micro push-in, handled in build_broll_filtergraph_entries
 #
 # The "base" portion is applied as a single linear chain.  Halation (split ->
 # gblur -> blend) and zoompan (timing-sensitive) are injected as separate
 # filter lines by build_broll_filtergraph_entries when look == HEAVY.
 BROLL_HEAVY_FILM_FF_FILTER = (
-    # VHS softness: mild blur then re-sharpen
-    "boxblur=2:1,"
-    "unsharp=5:5:1.2:5:5:0.0,"
-    # Color grading: desaturated, crushed blacks, cool tint
-    "eq=contrast=1.18:brightness=-0.03:saturation=0.72,"
-    "colorbalance=rs=0.03:gs=0.01:bs=0.08:rh=-0.04:gh=-0.01:bh=0.07,"
-    # Grain
-    "noise=c0s=18:c0f=t+u,"
+    # Film softness: mild blur then re-sharpen
+    "boxblur=1:1,"
+    "unsharp=5:5:0.8:5:5:0.0,"
+    # Teal/orange color grade: shadows→cyan, highlights→warm orange
+    "eq=contrast=1.12:brightness=-0.01:saturation=1.15,"
+    "colorbalance=rs=-0.07:gs=0.03:bs=0.09:rm=-0.02:gm=0.01:bm=0.01:rh=0.10:gh=0.04:bh=-0.06,"
+    # Neutral film grain (gray, not colored)
+    "noise=c0s=10:c0f=t+u,"
     # Flicker: subtle brightness oscillation (~3 Hz, small amplitude)
-    "eq=brightness='0.015*sin(2*PI*t*3)':eval=frame,"
+    "eq=brightness='0.012*sin(2*PI*t*3)':eval=frame,"
     # Scanlines: thin dark horizontal lines every 4 pixels
-    "drawgrid=w=0:h=4:t=1:c=black@0.07,"
-    # Chroma bleed: slight horizontal red/blue channel shift
-    "rgbashift=rh=-3:bh=3:rv=0:bv=0,"
-    # Vignette
-    "vignette=PI/4"
+    "drawgrid=w=0:h=4:t=1:c=black@0.05,"
+    # Faint black vignette
+    "vignette=PI/5"
+)
+
+# Base film texture chain (grain + scanlines + vignette only, no color grade).
+# Used when composing a custom user color grade with the default film texture.
+BROLL_FILM_TEXTURE_BASE = (
+    "noise=c0s=10:c0f=t+u,"
+    "drawgrid=w=0:h=4:t=1:c=black@0.05,"
+    "vignette=PI/5"
 )
 
 # Halation sub-filter: applied via split/overlay for HEAVY look.
@@ -111,6 +118,10 @@ _BROLL_LOOK_ALIASES: dict[str, str] = {
     "HALFTONE_HEAVY": "HEAVY_HALFTONE",
     "NEWSPRINT": "HEAVY_HALFTONE",
     "COMIC_PRINT": "HEAVY_HALFTONE",
+    "COMIC": "HEAVY_HALFTONE",
+    "DOT": "HEAVY_HALFTONE",
+    "NONE": "CLEAN",
+    "NO_EFFECT": "CLEAN",
 }
 
 # All known preset names (canonical)
@@ -144,7 +155,7 @@ def _probe_frei0r() -> bool:
 def _probe_heavy_filters() -> bool:
     """Return True if ffmpeg supports the filters used by the HEAVY preset.
 
-    Checks for: rgbashift, drawgrid, gblur, zoompan, boxblur.
+    Checks for: drawgrid, gblur, zoompan, boxblur.
     Falls back to CLEAN if any are missing.
     """
     global _heavy_filters_available
@@ -155,7 +166,7 @@ def _probe_heavy_filters() -> bool:
             ["ffmpeg", "-filters"],
             capture_output=True, text=True, timeout=5,
         )
-        needed = ["rgbashift", "drawgrid", "gblur", "zoompan", "boxblur"]
+        needed = ["drawgrid", "gblur", "zoompan", "boxblur"]
         _heavy_filters_available = all(f in result.stdout for f in needed)
     except Exception:
         _heavy_filters_available = False
@@ -239,12 +250,14 @@ def _sanitize_custom_filter_chain(raw: str) -> str:
     return sanitized
 
 
-def _generate_custom_broll_look(description: str) -> str:
-    """Generate a custom FFmpeg filter chain from a text description.
+def _generate_custom_color_grade(description: str) -> str:
+    """Generate a custom color-grade-only FFmpeg filter chain via Claude Haiku.
 
-    Uses Claude Haiku to produce an FFmpeg filter chain for the described look.
-    Returns a sanitized filter chain string.  Falls back to CLEAN on error.
+    Returns a sanitized filter chain of ONLY color correction filters.
+    Returns empty string on failure (caller composes with film texture base).
     """
+    if not description or not description.strip():
+        return ""
     try:
         import anthropic
         client = anthropic.Anthropic()
@@ -254,19 +267,34 @@ def _generate_custom_broll_look(description: str) -> str:
             messages=[{
                 "role": "user",
                 "content": (
-                    f"Generate a single-line FFmpeg video filter chain for this b-roll look: \"{description}\". "
-                    "Output ONLY the filter chain (comma-separated filters, no labels, no semicolons). "
+                    f"Generate a single-line FFmpeg video filter chain for this COLOR GRADE only: \"{description}\". "
+                    "Output ONLY color correction filters (comma-separated, no labels, no semicolons). "
+                    "Use ONLY: eq, colorbalance, curves, hue, colortemperature, colorcontrast, colorize. "
+                    "Do NOT include grain, noise, vignette, blur, or texture filters. "
                     "Must work with ffmpeg built-in filters only. "
-                    "Must preserve frame dimensions and frame rate. "
-                    "Example format: eq=contrast=1.2,boxblur=2:1,noise=c0s=5:c0f=t"
+                    "Example: eq=contrast=1.1:saturation=0.8,colorbalance=rs=0.05:bh=-0.03"
                 ),
             }],
         )
         raw = response.content[0].text.strip()
         return _sanitize_custom_filter_chain(raw)
     except Exception as e:
-        logger.warning("Custom b-roll look generation failed: %s", e)
-        return BROLL_LOOK_PRESET_FF_FILTER
+        logger.warning("Custom color grade generation failed: %s", e)
+        return ""
+
+
+def _generate_custom_broll_look(description: str) -> str:
+    """Generate a custom b-roll look: custom color grade + base film texture.
+
+    Uses Claude Haiku for the color grade portion, then composes with the
+    default film texture (grain + scanlines + vignette).
+    Falls back to default teal/orange film on error.
+    """
+    color_grade = _generate_custom_color_grade(description)
+    if color_grade:
+        return f"{color_grade},{BROLL_FILM_TEXTURE_BASE}"
+    # Fallback: use the full default teal/orange film chain
+    return BROLL_HEAVY_FILM_FF_FILTER
 
 
 def choose_broll_look(
@@ -282,9 +310,7 @@ def choose_broll_look(
     When *user_look* is provided, it is resolved via aliases and applied to
     every clip (returns the resolved canonical name or "CUSTOM").
 
-    When *user_look* is None (default), the distribution is:
-      - 80% HEAVY (existing heavy film preset)
-      - 20% HEAVY_HALFTONE (comic print / newsprint)
+    When *user_look* is None (default), always returns HEAVY (teal/orange film).
     Deterministic per clip_key (sha1 hash).
     Falls back gracefully when runtime filters are unavailable.
     """
@@ -296,19 +322,9 @@ def choose_broll_look(
             return "CLEAN"
         return resolved
 
-    # --- Default 80/20 distribution ---
+    # --- Default: 100% HEAVY (teal/orange film) ---
     heavy_ok = _probe_heavy_filters()
-
-    # Deterministic bucket from clip key
-    digest = int(hashlib.sha1(clip_key.encode()).hexdigest(), 16)
-    bucket = digest % 100  # 0-99
-
-    if bucket < 80:
-        preferred = "HEAVY" if heavy_ok else "CLEAN"
-    else:
-        preferred = "HEAVY_HALFTONE"
-
-    return preferred
+    return "HEAVY" if heavy_ok else "CLEAN"
 
 
 def _broll_filter_for_look(look: str, custom_desc: str = "") -> str:
@@ -385,13 +401,14 @@ def build_broll_filtergraph_entries(
             idx, look.lower(), raw_label, look_label,
         )
 
-        # Stage 1: trim + scale + position -> [b{i}_raw]
+        # Stage 1: fps normalize + trim + scale + position -> [b{i}_raw]
+        # fps=30 ensures consistent frame rate (prevents still-looking playback).
+        # No tpad=stop_mode=clone (was causing frozen-frame tails).
         filters.append(
-            f"[{broll_idx}:v]trim=duration={dur:.3f},"
+            f"[{broll_idx}:v]fps=30,trim=duration={dur:.3f},"
             f"scale=1080:1920:force_original_aspect_ratio=increase,"
             f"crop=1080:1920,"
-            f"setpts=PTS-STARTPTS+{bc['start']:.3f}/TB,"
-            f"tpad=stop_mode=clone:stop_duration={dur:.3f}[{raw_label}]"
+            f"setpts=PTS-STARTPTS+{bc['start']:.3f}/TB[{raw_label}]"
         )
         # Stage 2: apply look preset -> [b{i}_look]
         if look == "HEAVY":
@@ -417,8 +434,10 @@ def build_broll_filtergraph_entries(
                 f"[{raw_label}]{look_filter}[{look_label}]"
             )
         # Stage 3: composite [b{i}_look] (NOT [b{i}_raw]) onto running chain
+        # eof_action=pass: when b-roll ends, pass main video through (no freeze).
         filters.append(
             f"{last_label}[{look_label}]overlay="
+            f"eof_action=pass:"
             f"enable='between(t,{bc['start']:.3f},{bc['end']:.3f})'[{out_label}]"
         )
         last_label = f"[{out_label}]"

@@ -15,10 +15,13 @@ from apps.api.services.render_compiler import (
     BROLL_TV_LOOK_PRESET_FF_FILTER,
     BROLL_HEAVY_FILM_FF_FILTER,
     BROLL_HEAVY_HALFTONE_FALLBACK_FF_FILTER,
+    BROLL_FILM_TEXTURE_BASE,
     choose_broll_look,
     _broll_filter_for_look,
     _resolve_broll_look,
     _sanitize_custom_filter_chain,
+    _generate_custom_color_grade,
+    _generate_custom_broll_look,
     _get_heavy_halftone_filter,
     build_broll_filtergraph_entries,
 )
@@ -190,7 +193,7 @@ class TestCheckerboardRegeneration:
 # ====================================================================
 
 class TestBrollLookChoice:
-    """Tests for choose_broll_look determinism and default 80/20 distribution."""
+    """Tests for choose_broll_look determinism and default 100% HEAVY film."""
 
     @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
     def test_deterministic_same_key(self, _mock_heavy):
@@ -201,15 +204,15 @@ class TestBrollLookChoice:
         assert look1 == look2
 
     @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
-    def test_returns_valid_look(self, _mock_heavy):
-        """Default look is always one of HEAVY or HEAVY_HALFTONE."""
+    def test_default_is_always_heavy(self, _mock_heavy):
+        """Default look is always HEAVY (teal/orange film), never halftone."""
         for i in range(20):
             look = choose_broll_look(f"clip_{i}", i, None, 20, {})
-            assert look in ("HEAVY", "HEAVY_HALFTONE"), f"Unexpected look: {look}"
+            assert look == "HEAVY", f"Unexpected look: {look}"
 
     @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
-    def test_default_80_20_distribution(self, _mock_heavy):
-        """Default distribution: ~80% HEAVY, ~20% HEAVY_HALFTONE (deterministic)."""
+    def test_default_100_percent_heavy(self, _mock_heavy):
+        """Default distribution: 100% HEAVY (no halftone by default)."""
         counts: dict[str, int] = {}
         total = 50
         prev: str | None = None
@@ -218,12 +221,23 @@ class TestBrollLookChoice:
             counts[look] = counts.get(look, 0) + 1
             prev = look
 
-        heavy_pct = counts.get("HEAVY", 0) / total * 100
-        halftone_pct = counts.get("HEAVY_HALFTONE", 0) / total * 100
+        assert counts.get("HEAVY", 0) == total, (
+            f"Expected 100% HEAVY, got: {counts}"
+        )
+        assert counts.get("HEAVY_HALFTONE", 0) == 0, (
+            f"No halftone expected by default, got: {counts}"
+        )
 
-        # Allow ±10% tolerance
-        assert 70 <= heavy_pct <= 90, f"HEAVY={heavy_pct:.0f}% (expected ~80%)"
-        assert 10 <= halftone_pct <= 30, f"HEAVY_HALFTONE={halftone_pct:.0f}% (expected ~20%)"
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    def test_halftone_only_when_user_requests(self, _mock_heavy):
+        """Halftone must ONLY appear when user explicitly requests it."""
+        # Default: no halftone
+        for i in range(10):
+            look = choose_broll_look(f"no_ht_{i}", i, None, 10, {})
+            assert look != "HEAVY_HALFTONE", "Halftone should not appear by default"
+        # Explicit request: halftone
+        look = choose_broll_look("ht_test", 0, None, 5, {}, user_look="newsprint")
+        assert look == "HEAVY_HALFTONE"
 
     @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
     def test_multiple_clips_get_heavy(self, _mock_heavy):
@@ -264,16 +278,10 @@ class TestBrollLookChoice:
 
     @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=False)
     def test_heavy_falls_back_to_clean_when_filters_missing(self, _mock_heavy):
-        """When heavy filters unavailable, HEAVY falls back to CLEAN."""
-        # Force a key that would normally be HEAVY (bucket < 80)
-        # Since 80% of keys hash to HEAVY, just try several
-        found_clean = False
+        """When heavy filters unavailable, default falls back to CLEAN."""
         for i in range(20):
             look = choose_broll_look(f"fallback_{i}", i, None, 20, {})
-            if look == "CLEAN":
-                found_clean = True
-                break
-        assert found_clean, "Expected at least one CLEAN fallback when heavy filters missing"
+            assert look == "CLEAN", f"Expected CLEAN fallback, got {look}"
 
 
 class TestBrollFilterForLook:
@@ -336,6 +344,18 @@ class TestBrollLookAliases:
     def test_case_insensitive(self):
         assert _resolve_broll_look("newsprint") == "HEAVY_HALFTONE"
         assert _resolve_broll_look("Vhs") == "HEAVY"
+
+    def test_comic_alias(self):
+        assert _resolve_broll_look("comic") == "HEAVY_HALFTONE"
+
+    def test_dot_alias(self):
+        assert _resolve_broll_look("dot") == "HEAVY_HALFTONE"
+
+    def test_none_alias(self):
+        assert _resolve_broll_look("none") == "CLEAN"
+
+    def test_no_effect_alias(self):
+        assert _resolve_broll_look("no effect") == "CLEAN"
 
 
 class TestBrollFiltergraphWiring:
@@ -478,25 +498,28 @@ class TestBrollFiltergraphWiring:
 
 
 class TestHeavyFilmPreset:
-    """Tests for the HEAVY film + motion b-roll preset."""
+    """Tests for the HEAVY teal/orange film preset."""
 
     def test_heavy_preset_contains_all_components(self):
-        """HEAVY preset string must include all 7 required effect components."""
-        # 1) VHS softness: boxblur + unsharp
+        """HEAVY preset string must include all required effect components."""
+        # 1) Film softness: boxblur + unsharp
         assert "boxblur=" in BROLL_HEAVY_FILM_FF_FILTER
         assert "unsharp=" in BROLL_HEAVY_FILM_FF_FILTER
-        # 2) Grain: noise filter
+        # 2) Color grade: eq + colorbalance
+        assert "eq=contrast=" in BROLL_HEAVY_FILM_FF_FILTER
+        assert "colorbalance=" in BROLL_HEAVY_FILM_FF_FILTER
+        # 3) Grain: noise filter (neutral)
         assert "noise=" in BROLL_HEAVY_FILM_FF_FILTER
         assert "c0s=" in BROLL_HEAVY_FILM_FF_FILTER
-        # 3) Flicker: eq with brightness modulated by sin
+        # 4) Flicker: eq with brightness modulated by sin
         assert "sin(" in BROLL_HEAVY_FILM_FF_FILTER
         assert "eval=frame" in BROLL_HEAVY_FILM_FF_FILTER
-        # 4) Scanlines: drawgrid
+        # 5) Scanlines: drawgrid
         assert "drawgrid=" in BROLL_HEAVY_FILM_FF_FILTER
-        # 5) Chroma bleed: rgbashift
-        assert "rgbashift=" in BROLL_HEAVY_FILM_FF_FILTER
-        # 6) Halation: tested separately (split/blur/blend in filtergraph)
-        # 7) Zoom/pan: tested separately (zoompan in filtergraph)
+        # 6) Vignette
+        assert "vignette=" in BROLL_HEAVY_FILM_FF_FILTER
+        # 7) Halation: tested separately (split/blur/blend in filtergraph)
+        # 8) Zoom/pan: tested separately (zoompan in filtergraph)
 
     @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
     @patch("apps.api.services.render_compiler._probe_frei0r", return_value=False)
@@ -592,27 +615,55 @@ class TestHeavyFilmPreset:
         # No format=rgba (overlay image prep) should appear
         assert "format=rgba" not in joined
 
-    def test_heavy_preset_vhs_softness_values(self):
-        """VHS softness must have specific boxblur + unsharp parameters."""
-        assert "boxblur=2:1" in BROLL_HEAVY_FILM_FF_FILTER
-        assert "unsharp=5:5:1.2" in BROLL_HEAVY_FILM_FF_FILTER
+    def test_heavy_preset_film_softness_values(self):
+        """Film softness must have specific boxblur + unsharp parameters."""
+        assert "boxblur=1:1" in BROLL_HEAVY_FILM_FF_FILTER
+        assert "unsharp=5:5:0.8" in BROLL_HEAVY_FILM_FF_FILTER
 
     def test_heavy_preset_grain_strength(self):
-        """Grain noise must be heavier than TV preset (c0s >= 12)."""
+        """Grain noise must be visible but not overwhelming (c0s > TV's 8)."""
         import re
         heavy_match = re.search(r"c0s=(\d+)", BROLL_HEAVY_FILM_FF_FILTER)
         tv_match = re.search(r"c0s=(\d+)", BROLL_TV_LOOK_PRESET_FF_FILTER)
         assert heavy_match and tv_match
         assert int(heavy_match.group(1)) > int(tv_match.group(1))
 
-    def test_heavy_preset_chroma_shift_bounded(self):
-        """Chroma shift must be modest (abs(rh) <= 5, abs(bh) <= 5)."""
+    def test_heavy_preset_no_grayscale(self):
+        """Heavy film chain must NOT desaturate to grayscale."""
+        assert "hue=s=0" not in BROLL_HEAVY_FILM_FF_FILTER
+        assert "format=gray" not in BROLL_HEAVY_FILM_FF_FILTER
+        # Saturation must be >= 1.0 (color preserved, not washed out)
         import re
-        rh = re.search(r"rh=(-?\d+)", BROLL_HEAVY_FILM_FF_FILTER)
-        bh = re.search(r"bh=(-?\d+)", BROLL_HEAVY_FILM_FF_FILTER)
+        sat_match = re.search(r"saturation=(\d+\.?\d*)", BROLL_HEAVY_FILM_FF_FILTER)
+        assert sat_match, "Missing saturation in heavy film chain"
+        assert float(sat_match.group(1)) >= 1.0, (
+            f"Saturation too low: {sat_match.group(1)} (would desaturate)"
+        )
+
+    def test_heavy_preset_no_purple_magenta(self):
+        """Heavy film chain must NOT contain purple/magenta-pushing filters."""
+        # No rgbashift (was causing color fringing that reads as purple)
+        assert "rgbashift" not in BROLL_HEAVY_FILM_FF_FILTER
+        # No hue rotate that could push magenta
+        assert "hue=h=" not in BROLL_HEAVY_FILM_FF_FILTER
+        # No channel mixing that creates magenta
+        assert "colorchannelmixer" not in BROLL_HEAVY_FILM_FF_FILTER
+
+    def test_heavy_preset_teal_orange_colorbalance(self):
+        """Heavy film must push shadows→teal (blue+green) and highlights→orange (red)."""
+        import re
+        # Shadows: red should be negative (less red = more cyan/teal)
+        rs = re.search(r"rs=(-?[\d.]+)", BROLL_HEAVY_FILM_FF_FILTER)
+        bs = re.search(r"bs=(-?[\d.]+)", BROLL_HEAVY_FILM_FF_FILTER)
+        assert rs and bs
+        assert float(rs.group(1)) < 0, f"Shadow red should be negative (teal), got rs={rs.group(1)}"
+        assert float(bs.group(1)) > 0, f"Shadow blue should be positive (teal), got bs={bs.group(1)}"
+        # Highlights: red should be positive (orange)
+        rh = re.search(r"rh=(-?[\d.]+)", BROLL_HEAVY_FILM_FF_FILTER)
+        bh = re.search(r"bh=(-?[\d.]+)", BROLL_HEAVY_FILM_FF_FILTER)
         assert rh and bh
-        assert abs(int(rh.group(1))) <= 5
-        assert abs(int(bh.group(1))) <= 5
+        assert float(rh.group(1)) > 0, f"Highlight red should be positive (orange), got rh={rh.group(1)}"
+        assert float(bh.group(1)) < 0, f"Highlight blue should be negative (orange), got bh={bh.group(1)}"
 
 
 # ====================================================================
@@ -797,3 +848,130 @@ class TestCustomBrollLook:
 
         # Should have CLEAN preset filter, not any custom generation
         assert BROLL_LOOK_PRESET_FF_FILTER in joined
+
+
+# ====================================================================
+# Part E — B-roll motion regression tests
+# ====================================================================
+
+class TestBrollMotionRegression:
+    """Regression tests ensuring b-roll plays as moving video, not stills."""
+
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    def test_broll_filtergraph_has_fps_normalization(self, _mock_heavy):
+        """B-roll filtergraph must contain fps= for frame rate normalization."""
+        clips = [{"path": "/tmp/motion.mp4", "start": 5.0, "end": 8.0}]
+        with patch(
+            "apps.api.services.render_compiler.choose_broll_look", return_value="HEAVY"
+        ):
+            filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+        joined = ";".join(filters)
+        assert "fps=" in joined, "Missing fps normalization in b-roll filtergraph"
+
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    def test_broll_filtergraph_has_setpts(self, _mock_heavy):
+        """B-roll filtergraph must contain setpts=PTS-STARTPTS for timing."""
+        clips = [{"path": "/tmp/pts.mp4", "start": 2.0, "end": 5.0}]
+        with patch(
+            "apps.api.services.render_compiler.choose_broll_look", return_value="HEAVY"
+        ):
+            filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+        joined = ";".join(filters)
+        assert "setpts=PTS-STARTPTS" in joined, "Missing setpts in b-roll filtergraph"
+
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    def test_broll_filtergraph_no_loop(self, _mock_heavy):
+        """B-roll filtergraph must NOT contain loop= (causes still playback)."""
+        clips = [{"path": "/tmp/noloop.mp4", "start": 3.0, "end": 6.0}]
+        with patch(
+            "apps.api.services.render_compiler.choose_broll_look", return_value="HEAVY"
+        ):
+            filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+        joined = ";".join(filters)
+        assert "loop=" not in joined, "B-roll must not use loop= (causes stills)"
+
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    def test_broll_filtergraph_no_select_eq(self, _mock_heavy):
+        """B-roll filtergraph must NOT contain select=eq(n (single-frame selector)."""
+        clips = [{"path": "/tmp/noselect.mp4", "start": 1.0, "end": 4.0}]
+        with patch(
+            "apps.api.services.render_compiler.choose_broll_look", return_value="HEAVY"
+        ):
+            filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+        joined = ";".join(filters)
+        assert "select=eq(n" not in joined, "B-roll must not use select=eq(n"
+
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    def test_broll_filtergraph_no_tpad_stop_clone(self, _mock_heavy):
+        """B-roll filtergraph must NOT contain tpad=stop_mode=clone (frozen frames)."""
+        clips = [{"path": "/tmp/notpad.mp4", "start": 2.0, "end": 5.0}]
+        with patch(
+            "apps.api.services.render_compiler.choose_broll_look", return_value="HEAVY"
+        ):
+            filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+        joined = ";".join(filters)
+        assert "tpad=stop_mode=clone" not in joined, (
+            "B-roll must not use tpad=stop_mode=clone (causes frozen tail frames)"
+        )
+
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    def test_broll_overlay_has_eof_action_pass(self, _mock_heavy):
+        """B-roll overlay must use eof_action=pass to prevent hangs."""
+        clips = [{"path": "/tmp/eof.mp4", "start": 3.0, "end": 6.0}]
+        with patch(
+            "apps.api.services.render_compiler.choose_broll_look", return_value="HEAVY"
+        ):
+            filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+        overlay_lines = [f for f in filters if "overlay=" in f and "[b0_out]" in f]
+        assert len(overlay_lines) == 1
+        assert "eof_action=pass" in overlay_lines[0], (
+            "Overlay must have eof_action=pass"
+        )
+
+
+# ====================================================================
+# Part F — Custom color grade via Haiku
+# ====================================================================
+
+class TestCustomColorGrade:
+    """Tests for the custom color grade + film texture composition."""
+
+    @patch("apps.api.services.render_compiler._generate_custom_color_grade",
+           return_value="eq=contrast=1.3:saturation=0.7,colorbalance=rs=0.05:bh=-0.03")
+    def test_custom_broll_look_composes_grade_with_texture(self, _mock_grade):
+        """Custom look must compose haiku color grade with film texture base."""
+        result = _generate_custom_broll_look("warm sunset")
+        # Must contain the color grade from haiku
+        assert "eq=contrast=1.3" in result
+        assert "colorbalance=rs=0.05" in result
+        # Must contain the film texture base (grain + scanlines + vignette)
+        assert BROLL_FILM_TEXTURE_BASE in result
+
+    @patch("apps.api.services.render_compiler._generate_custom_color_grade",
+           return_value="")
+    def test_custom_broll_look_falls_back_on_empty_grade(self, _mock_grade):
+        """If haiku returns empty, fall back to default teal/orange film."""
+        result = _generate_custom_broll_look("broken request")
+        assert result == BROLL_HEAVY_FILM_FF_FILTER
+
+    @patch("apps.api.services.render_compiler._generate_custom_color_grade",
+           return_value="eq=contrast=1.1:saturation=0.9")
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    def test_custom_grade_wired_in_filtergraph(self, _mock_heavy, _mock_grade):
+        """Custom color grade must appear in the actual filtergraph."""
+        clips = [{"path": "/tmp/custom_grade.mp4", "start": 1.0, "end": 3.0}]
+        filters, _, _ = build_broll_filtergraph_entries(
+            clips, 1, "[0:v]", user_look="warm kodak film",
+        )
+        joined = ";".join(filters)
+        # Custom grade present
+        assert "eq=contrast=1.1:saturation=0.9" in joined
+        # Film texture base present
+        assert "vignette=" in joined
+        assert "noise=" in joined
+
+    def test_film_texture_base_has_grain_scanlines_vignette(self):
+        """Film texture base must have grain, scanlines, and vignette."""
+        assert "noise=" in BROLL_FILM_TEXTURE_BASE
+        assert "drawgrid=" in BROLL_FILM_TEXTURE_BASE
+        assert "vignette=" in BROLL_FILM_TEXTURE_BASE
