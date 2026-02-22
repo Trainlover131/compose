@@ -67,6 +67,26 @@ BROLL_HEAVY_FILM_FF_FILTER = (
     "vignette=PI/4"
 )
 
+# DEFAULT FILM preset: the single default look for ALL b-roll clips when the
+# user does not specify an explicit look.  Clean color-grade + subtle texture.
+BROLL_DEFAULT_FILM_FF_FILTER = (
+    "format=yuv420p,"
+    "eq=contrast=1.20:saturation=0.96:brightness=0.00:gamma_r=1.00:gamma_g=1.00:gamma_b=1.03,"
+    "colorbalance=rs=-0.040:gs=0.010:bs=0.045:rm=-0.010:gm=0.000:bm=0.010:rh=0.060:gh=0.020:bh=-0.065,"
+    "curves=master='0/0 0.75/0.76 0.90/0.88 1/0.95',"
+    "noise=c0s=4:c0f=t+u,"
+    "drawgrid=w=0:h=4:t=1:c=black@0.04,"
+    "vignette=PI/6"
+)
+
+# Texture-only tail of DEFAULT_FILM (noise + drawgrid + vignette).
+# Used when composing a Haiku-generated color-grade in front of texture.
+_DEFAULT_FILM_TEXTURE = (
+    "noise=c0s=4:c0f=t+u,"
+    "drawgrid=w=0:h=4:t=1:c=black@0.04,"
+    "vignette=PI/6"
+)
+
 # Halation sub-filter: applied via split/overlay for HEAVY look.
 # Blurs highlights and blends back at low opacity for a glow effect.
 _HEAVY_HALATION_BLUR = "gblur=sigma=25"
@@ -140,58 +160,105 @@ def choose_broll_look(
     total_clips: int,
     counts: dict[str, int],
 ) -> str:
-    """Choose a deterministic look for a b-roll clip.
+    """Return the default b-roll look for every clip.
 
-    Rules:
-      - Deterministic per clip_key (sha1 hash).
-      - Caps: CLEAN 50%, TV 20%, HEAVY 20%, HALFTONE 10%.
-      - Never two consecutive non-CLEAN looks.
-      - Falls back to CLEAN when caps are exceeded or runtime filters missing.
+    When no user-specified look is provided, every b-roll clip receives
+    the DEFAULT_FILM look (100% uniform, no per-clip variety).
     """
-    halftone_ok = _probe_frei0r()
-    heavy_ok = _probe_heavy_filters()
-
-    # Deterministic bucket from clip key
-    digest = int(hashlib.sha1(clip_key.encode()).hexdigest(), 16)
-    bucket = digest % 100  # 0-99
-
-    if bucket < 50:
-        preferred = "CLEAN"
-    elif bucket < 70:
-        preferred = "TV"
-    elif bucket < 90:
-        preferred = "HEAVY" if heavy_ok else "CLEAN"
-    else:
-        preferred = "HALFTONE" if halftone_ok else ("HEAVY" if heavy_ok else "CLEAN")
-
-    # Enforce caps
-    max_tv = max(1, int(total_clips * _BROLL_CAP_TV + 0.5))
-    max_heavy = max(1, int(total_clips * _BROLL_CAP_HEAVY + 0.5)) if heavy_ok else 0
-    max_halftone = max(1, int(total_clips * _BROLL_CAP_HALFTONE + 0.5)) if halftone_ok else 0
-
-    if preferred == "TV" and counts.get("TV", 0) >= max_tv:
-        preferred = "CLEAN"
-    if preferred == "HEAVY" and counts.get("HEAVY", 0) >= max_heavy:
-        preferred = "CLEAN"
-    if preferred == "HALFTONE" and counts.get("HALFTONE", 0) >= max_halftone:
-        preferred = "CLEAN"
-
-    # No two consecutive non-CLEAN
-    if preferred != "CLEAN" and prev_look is not None and prev_look != "CLEAN":
-        preferred = "CLEAN"
-
-    return preferred
+    return "DEFAULT_FILM"
 
 
 def _broll_filter_for_look(look: str) -> str:
-    """Return the FFmpeg filter string for the given b-roll look."""
+    """Return the FFmpeg filter string for the given b-roll look.
+
+    Known looks resolve to built-in presets.  Unknown look strings are sent
+    to Claude Haiku to produce a color-grade subchain that is composed in
+    front of the default film texture (noise + drawgrid + vignette).
+    """
+    if look == "DEFAULT_FILM":
+        return BROLL_DEFAULT_FILM_FF_FILTER
+    if look == "CLEAN":
+        return BROLL_LOOK_PRESET_FF_FILTER
     if look == "TV":
         return BROLL_TV_LOOK_PRESET_FF_FILTER
     if look == "HALFTONE":
         return BROLL_HALFTONE_LOOK_PRESET_FF_FILTER
     if look == "HEAVY":
         return BROLL_HEAVY_FILM_FF_FILTER
-    return BROLL_LOOK_PRESET_FF_FILTER
+    if look.lower() == "none":
+        return ""
+    # Unknown / custom: attempt Haiku color-grade, compose with texture
+    custom_grade = _generate_haiku_color_grade(look)
+    if custom_grade:
+        return f"format=yuv420p,{custom_grade},{_DEFAULT_FILM_TEXTURE}"
+    return BROLL_DEFAULT_FILM_FF_FILTER
+
+
+def _generate_haiku_color_grade(user_look: str) -> str | None:
+    """Call Claude Haiku to generate a color-grade FFmpeg filter subchain.
+
+    Returns only color-grade filters (eq, colorbalance, curves, etc.).
+    Does NOT return texture, timing, fps, or setpts filters.
+    Returns None on failure (missing SDK, network error, invalid output).
+    """
+    try:
+        import anthropic  # noqa: F811
+    except ImportError:
+        logger.warning("anthropic SDK not installed; cannot generate custom grade")
+        return None
+
+    prompt = (
+        "Generate ONLY an FFmpeg color-grade filter subchain for the following look: "
+        f'"{user_look}". '
+        "Rules:\n"
+        "- Use ONLY color-grade filters: eq, colorbalance, curves, colorchannelmixer, hue, lut3d.\n"
+        "- Do NOT include: noise, drawgrid, vignette, setpts, fps, format, scale, or any texture/timing filters.\n"
+        "- Output ONLY the comma-separated filter chain, nothing else. No explanation.\n"
+        "- Example: eq=contrast=1.10:saturation=0.85:brightness=0.02,colorbalance=rs=0.05:bs=-0.03\n"
+    )
+
+    try:
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model="claude-haiku-4-20250414",
+            max_tokens=256,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        grade = response.content[0].text.strip()
+        # Reject if it contains forbidden filters
+        forbidden = ["noise", "drawgrid", "vignette", "setpts", "fps=", "format=", "scale="]
+        if any(f in grade for f in forbidden):
+            logger.warning("Haiku grade contained forbidden filters; discarding: %s", grade)
+            return None
+        return grade
+    except Exception as e:
+        logger.warning("Haiku color grade generation failed: %s", e)
+        return None
+
+
+def compose_broll_look_for_user_request(user_look: str) -> str:
+    """Resolve a user-requested b-roll look into an FFmpeg filter chain.
+
+    Known looks ('clean', 'tv', 'heavy', 'halftone', 'none') use built-in
+    presets.  Unknown looks or directives ('color:', 'grade:', 'warm',
+    'kodak', etc.) are sent to Claude Haiku to generate a color-grade
+    subchain composed in front of the default film texture.
+    """
+    _KNOWN: dict[str, str] = {
+        "clean": BROLL_LOOK_PRESET_FF_FILTER,
+        "tv": BROLL_TV_LOOK_PRESET_FF_FILTER,
+        "heavy": BROLL_HEAVY_FILM_FF_FILTER,
+        "halftone": BROLL_HALFTONE_LOOK_PRESET_FF_FILTER,
+        "none": "",
+    }
+    normalized = user_look.strip().lower()
+    if normalized in _KNOWN:
+        return _KNOWN[normalized]
+    # Custom: call Haiku for color grade, compose with default texture
+    custom_grade = _generate_haiku_color_grade(user_look)
+    if custom_grade:
+        return f"format=yuv420p,{custom_grade},{_DEFAULT_FILM_TEXTURE}"
+    return BROLL_DEFAULT_FILM_FF_FILTER
 
 
 def build_broll_filtergraph_entries(
