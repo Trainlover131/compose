@@ -132,6 +132,7 @@ Do NOT place items at arbitrary round-number times. Use the word_timings above.
 - placement: x,y = position (0=left/top, 1=right/bottom), w = width fraction. Common: top-right corner = {{"x":0.78,"y":0.08,"w":0.20}}.
 - animation: fade_in and fade_out in seconds (typically 0.1–0.3s).
 - IMPORTANT: In the "reason" field, always include a verbatim anchor quote from the transcript. The start_orig and end_orig MUST wrap that quoted segment with 0.2–0.6s of padding on each side.
+- FIRST-MENTION RULE: If an overlay entity (e.g. a logo, product, person) is mentioned multiple times in the transcript, anchor the overlay to the FIRST mention only. Do not create duplicate overlays for later mentions of the same entity.
 
 === GENERAL ===
 - Use ORIGINAL video timestamps (seconds).
