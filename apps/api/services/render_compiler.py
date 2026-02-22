@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -36,35 +35,36 @@ BROLL_TV_LOOK_PRESET_FF_FILTER = (
     "vignette=PI/5"
 )
 
-# HEAVY FILM preset: teal/orange "blockbuster" color-corrected film look.
+# HEAVY FILM preset: strong VHS/film look for b-roll only.
 # Components (all built-in ffmpeg filters, no external deps):
-#   1) Softness:     boxblur=1:1 -> unsharp (mild blur + re-sharpen edges)
-#   2) Color grade:  eq (contrast/sat) + colorbalance (shadows→teal, highlights→orange)
-#   3) Grain:        noise=c0s=10:c0f=t+u (neutral gray film grain)
-#   4) Flicker:      eq with sin(t) brightness modulation
-#   5) Scanlines:    drawgrid with thin dark lines every 4px
-#   6) Vignette:     faint black vignette
-#   7) Halation/glow: handled via split/overlay in build_broll_filtergraph_entries
-#   8) Zoom/pan:      zoompan micro push-in, handled in build_broll_filtergraph_entries
+#   1) VHS softness:  boxblur=2:1 -> unsharp (mild blur + re-sharpen edges)
+#   2) Grain:         noise=c0s=18:c0f=t+u (heavy temporal+uniform grain)
+#   3) Flicker:       eq with sin(t) brightness modulation
+#   4) Scanlines:     drawgrid with thin dark lines every 4px
+#   5) Chroma bleed:  rgbashift horizontal red/blue shift
+#   6) Halation/glow: handled via split/overlay in build_broll_filtergraph_entries
+#   7) Zoom/pan:      zoompan micro push-in, handled in build_broll_filtergraph_entries
 #
 # The "base" portion is applied as a single linear chain.  Halation (split ->
 # gblur -> blend) and zoompan (timing-sensitive) are injected as separate
 # filter lines by build_broll_filtergraph_entries when look == HEAVY.
 BROLL_HEAVY_FILM_FF_FILTER = (
-    # Film softness: mild blur then re-sharpen
-    "boxblur=1:1,"
-    "unsharp=5:5:0.8:5:5:0.0,"
-    # Teal/orange color grade: shadows→cyan, highlights→warm orange
-    "eq=contrast=1.12:brightness=-0.01:saturation=1.15,"
-    "colorbalance=rs=-0.07:gs=0.03:bs=0.09:rm=-0.02:gm=0.01:bm=0.01:rh=0.10:gh=0.04:bh=-0.06,"
-    # Neutral film grain (gray, not colored)
-    "noise=c0s=10:c0f=t+u,"
+    # VHS softness: mild blur then re-sharpen
+    "boxblur=2:1,"
+    "unsharp=5:5:1.2:5:5:0.0,"
+    # Color grading: desaturated, crushed blacks, cool tint
+    "eq=contrast=1.18:brightness=-0.03:saturation=0.72,"
+    "colorbalance=rs=0.03:gs=0.01:bs=0.08:rh=-0.04:gh=-0.01:bh=0.07,"
+    # Grain
+    "noise=c0s=18:c0f=t+u,"
     # Flicker: subtle brightness oscillation (~3 Hz, small amplitude)
-    "eq=brightness='0.012*sin(2*PI*t*3)':eval=frame,"
+    "eq=brightness='0.015*sin(2*PI*t*3)':eval=frame,"
     # Scanlines: thin dark horizontal lines every 4 pixels
-    "drawgrid=w=0:h=4:t=1:c=black@0.05,"
-    # Faint black vignette
-    "vignette=PI/5"
+    "drawgrid=w=0:h=4:t=1:c=black@0.07,"
+    # Chroma bleed: slight horizontal red/blue channel shift
+    "rgbashift=rh=-3:bh=3:rv=0:bv=0,"
+    # Vignette
+    "vignette=PI/4"
 )
 
 # Halation sub-filter: applied via split/overlay for HEAVY look.
@@ -85,43 +85,15 @@ BROLL_HALFTONE_LOOK_PRESET_FF_FILTER = (
     "format=rgba,colorchannelmixer=aa=0.85"
 )
 
-# HEAVY_HALFTONE FFmpeg-only fallback: newsprint/comic print without frei0r.
-# Posterized high-contrast grayscale with sharp edges and paper grain texture.
-BROLL_HEAVY_HALFTONE_FALLBACK_FF_FILTER = (
-    # Desaturate to near-monochrome for newsprint/comic feel
-    "eq=contrast=1.35:brightness=-0.04:saturation=0.15,"
-    # Push to full grayscale
-    "hue=s=0,"
-    # Posterize: high contrast reduces tonal range
-    "eq=contrast=1.50:brightness=-0.02,"
-    # Sharp edges for print/comic line feel
-    "unsharp=7:7:1.8:7:7:0.0,"
-    # Paper grain texture
-    "noise=c0s=12:c0f=t+u,"
-    # Aged print vignette
-    "vignette=PI/5"
-)
-
-# B-roll look aliases: user-facing names -> canonical internal names
-_BROLL_LOOK_ALIASES: dict[str, str] = {
-    "HEAVY_FILM": "HEAVY",
-    "VHS": "HEAVY",
-    "FILM": "HEAVY",
-    "HALFTONE_HEAVY": "HEAVY_HALFTONE",
-    "NEWSPRINT": "HEAVY_HALFTONE",
-    "COMIC_PRINT": "HEAVY_HALFTONE",
-}
-
-# All known preset names (canonical)
-_KNOWN_PRESETS = {"CLEAN", "TV", "HEAVY", "HALFTONE", "HEAVY_HALFTONE"}
+# Caps per output video
+_BROLL_CAP_CLEAN = 0.50
+_BROLL_CAP_TV = 0.20
+_BROLL_CAP_HEAVY = 0.20
+_BROLL_CAP_HALFTONE = 0.10
 
 # Runtime flags: set on first probe (or False if absent)
 _frei0r_available: Optional[bool] = None
 _heavy_filters_available: Optional[bool] = None
-_frei0r_halftone_filter: Optional[str] = None
-
-# Cache for custom-generated filter chains
-_custom_look_cache: dict[str, str] = {}
 
 
 def _probe_frei0r() -> bool:
@@ -131,7 +103,7 @@ def _probe_frei0r() -> bool:
         return _frei0r_available
     try:
         result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-filters"],
+            ["ffmpeg", "-filters"],
             capture_output=True, text=True, timeout=5,
         )
         _frei0r_available = "frei0r" in result.stdout
@@ -161,156 +133,57 @@ def _probe_heavy_filters() -> bool:
     return _heavy_filters_available
 
 
-def _probe_frei0r_halftone() -> Optional[str]:
-    """Scan ffmpeg -filters for a frei0r halftone-style filter.
-
-    Returns the filter name string for use in frei0r=filter_name=..., or None.
-    Result is cached after first call.
-    """
-    global _frei0r_halftone_filter
-    if _frei0r_halftone_filter is not None:
-        return _frei0r_halftone_filter or None
-
-    if not _probe_frei0r():
-        _frei0r_halftone_filter = ""
-        return None
-
-    candidates = ["halftone", "pixeliz0r", "cartoon"]
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-filters"],
-            capture_output=True, text=True, timeout=5,
-        )
-        for name in candidates:
-            if name in result.stdout:
-                _frei0r_halftone_filter = name
-                return name
-    except Exception:
-        pass
-
-    _frei0r_halftone_filter = ""
-    return None
-
-
-def _get_heavy_halftone_filter() -> str:
-    """Return the HEAVY_HALFTONE filter chain, preferring frei0r if available."""
-    halftone = _probe_frei0r_halftone()
-    if halftone:
-        return (
-            "eq=contrast=1.30:brightness=-0.03:saturation=0.25,"
-            "format=gray,eq=contrast=1.40:brightness=-0.02,"
-            f"frei0r=filter_name={halftone}:filter_params=0.65|0.80|0.15,"
-            "format=rgba,colorchannelmixer=aa=0.90"
-        )
-    return BROLL_HEAVY_HALFTONE_FALLBACK_FF_FILTER
-
-
-def _resolve_broll_look(user_look: str) -> str:
-    """Resolve a user-specified look string to a canonical preset name or CUSTOM."""
-    canonical = user_look.strip().upper().replace(" ", "_")
-    if canonical in _BROLL_LOOK_ALIASES:
-        return _BROLL_LOOK_ALIASES[canonical]
-    if canonical in _KNOWN_PRESETS:
-        return canonical
-    return "CUSTOM"
-
-
-def _sanitize_custom_filter_chain(raw: str) -> str:
-    """Sanitize a user/LLM-generated filter chain string.
-
-    - Removes input/output labels like [0:v]
-    - Strips semicolons (prevent filtergraph termination)
-    - Blocks movie= and amovie= (prevent external file access)
-    - Falls back to CLEAN if result is empty after sanitization
-    """
-    # Remove input/output labels like [0:v], [in], etc.
-    sanitized = re.sub(r'\[[^\]]*\]', '', raw)
-    # Remove semicolons
-    sanitized = sanitized.replace(';', '')
-    # Block external file access and command injection
-    if re.search(r'(?:a?movie|sendcmd|zmq)', sanitized, re.IGNORECASE):
-        logger.warning("Custom filter chain blocked (external access): %s", raw)
-        return BROLL_LOOK_PRESET_FF_FILTER
-    # Clean up leading/trailing commas and whitespace
-    sanitized = sanitized.strip().strip(',').strip()
-    if not sanitized:
-        return BROLL_LOOK_PRESET_FF_FILTER
-    return sanitized
-
-
-def _generate_custom_broll_look(description: str) -> str:
-    """Generate a custom FFmpeg filter chain from a text description.
-
-    Uses Claude Haiku to produce an FFmpeg filter chain for the described look.
-    Returns a sanitized filter chain string.  Falls back to CLEAN on error.
-    """
-    try:
-        import anthropic
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=256,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Generate a single-line FFmpeg video filter chain for this b-roll look: \"{description}\". "
-                    "Output ONLY the filter chain (comma-separated filters, no labels, no semicolons). "
-                    "Must work with ffmpeg built-in filters only. "
-                    "Must preserve frame dimensions and frame rate. "
-                    "Example format: eq=contrast=1.2,boxblur=2:1,noise=c0s=5:c0f=t"
-                ),
-            }],
-        )
-        raw = response.content[0].text.strip()
-        return _sanitize_custom_filter_chain(raw)
-    except Exception as e:
-        logger.warning("Custom b-roll look generation failed: %s", e)
-        return BROLL_LOOK_PRESET_FF_FILTER
-
-
 def choose_broll_look(
     clip_key: str,
     clip_index: int,
     prev_look: Optional[str],
     total_clips: int,
     counts: dict[str, int],
-    user_look: Optional[str] = None,
 ) -> str:
     """Choose a deterministic look for a b-roll clip.
 
-    When *user_look* is provided, it is resolved via aliases and applied to
-    every clip (returns the resolved canonical name or "CUSTOM").
-
-    When *user_look* is None (default), the distribution is:
-      - 80% HEAVY (existing heavy film preset)
-      - 20% HEAVY_HALFTONE (comic print / newsprint)
-    Deterministic per clip_key (sha1 hash).
-    Falls back gracefully when runtime filters are unavailable.
+    Rules:
+      - Deterministic per clip_key (sha1 hash).
+      - Caps: CLEAN 50%, TV 20%, HEAVY 20%, HALFTONE 10%.
+      - Never two consecutive non-CLEAN looks.
+      - Falls back to CLEAN when caps are exceeded or runtime filters missing.
     """
-    # --- User-specified look: honour exactly ---
-    if user_look is not None:
-        resolved = _resolve_broll_look(user_look)
-        # Runtime fallbacks for presets that need probing
-        if resolved == "HEAVY" and not _probe_heavy_filters():
-            return "CLEAN"
-        return resolved
-
-    # --- Default 80/20 distribution ---
+    halftone_ok = _probe_frei0r()
     heavy_ok = _probe_heavy_filters()
 
     # Deterministic bucket from clip key
     digest = int(hashlib.sha1(clip_key.encode()).hexdigest(), 16)
     bucket = digest % 100  # 0-99
 
-    if bucket < 80:
+    if bucket < 50:
+        preferred = "CLEAN"
+    elif bucket < 70:
+        preferred = "TV"
+    elif bucket < 90:
         preferred = "HEAVY" if heavy_ok else "CLEAN"
     else:
-        preferred = "HEAVY_HALFTONE"
+        preferred = "HALFTONE" if halftone_ok else ("HEAVY" if heavy_ok else "CLEAN")
+
+    # Enforce caps
+    max_tv = max(1, int(total_clips * _BROLL_CAP_TV + 0.5))
+    max_heavy = max(1, int(total_clips * _BROLL_CAP_HEAVY + 0.5)) if heavy_ok else 0
+    max_halftone = max(1, int(total_clips * _BROLL_CAP_HALFTONE + 0.5)) if halftone_ok else 0
+
+    if preferred == "TV" and counts.get("TV", 0) >= max_tv:
+        preferred = "CLEAN"
+    if preferred == "HEAVY" and counts.get("HEAVY", 0) >= max_heavy:
+        preferred = "CLEAN"
+    if preferred == "HALFTONE" and counts.get("HALFTONE", 0) >= max_halftone:
+        preferred = "CLEAN"
+
+    # No two consecutive non-CLEAN
+    if preferred != "CLEAN" and prev_look is not None and prev_look != "CLEAN":
+        preferred = "CLEAN"
 
     return preferred
 
 
-def _broll_filter_for_look(look: str, custom_desc: str = "") -> str:
+def _broll_filter_for_look(look: str) -> str:
     """Return the FFmpeg filter string for the given b-roll look."""
     if look == "TV":
         return BROLL_TV_LOOK_PRESET_FF_FILTER
@@ -318,12 +191,6 @@ def _broll_filter_for_look(look: str, custom_desc: str = "") -> str:
         return BROLL_HALFTONE_LOOK_PRESET_FF_FILTER
     if look == "HEAVY":
         return BROLL_HEAVY_FILM_FF_FILTER
-    if look == "HEAVY_HALFTONE":
-        return _get_heavy_halftone_filter()
-    if look == "CUSTOM" and custom_desc:
-        if custom_desc not in _custom_look_cache:
-            _custom_look_cache[custom_desc] = _generate_custom_broll_look(custom_desc)
-        return _custom_look_cache[custom_desc]
     return BROLL_LOOK_PRESET_FF_FILTER
 
 
@@ -331,7 +198,6 @@ def build_broll_filtergraph_entries(
     broll_clips: list[dict],
     input_index_start: int,
     last_label: str,
-    user_look: Optional[str] = None,
 ) -> tuple[list[str], str, int]:
     """Build filter_complex entries for b-roll clips with look presets.
 
@@ -339,11 +205,8 @@ def build_broll_filtergraph_entries(
 
     Each b-roll clip gets three labeled stages in the filtergraph:
       [b{i}_raw]  — trim + scale + position
-      [b{i}_look] — look preset applied (CLEAN/TV/HALFTONE/HEAVY/HEAVY_HALFTONE/CUSTOM)
+      [b{i}_look] — look preset applied (CLEAN/TV/HALFTONE/HEAVY)
       overlay composited using [b{i}_look] onto the running chain
-
-    *user_look*: when provided, every clip uses this look (resolved via aliases).
-                 When None, default 80/20 HEAVY/HEAVY_HALFTONE distribution is used.
 
     This function is intentionally extractable for unit-testing: the
     returned filter lines are exactly what goes into the final
@@ -354,11 +217,6 @@ def build_broll_filtergraph_entries(
     prev_broll_look: str | None = None
     total_broll = len(broll_clips)
     input_index = input_index_start
-
-    # Resolve the custom description once (used for CUSTOM looks)
-    custom_desc = ""
-    if user_look is not None and _resolve_broll_look(user_look) == "CUSTOM":
-        custom_desc = user_look.strip()
 
     for idx, bc in enumerate(broll_clips):
         broll_idx = input_index
@@ -373,11 +231,10 @@ def build_broll_filtergraph_entries(
         clip_key = bc.get("path", f"broll_{idx}")
         look = choose_broll_look(
             clip_key, idx, prev_broll_look, total_broll, broll_look_counts,
-            user_look=user_look,
         )
         broll_look_counts[look] = broll_look_counts.get(look, 0) + 1
         prev_broll_look = look
-        look_filter = _broll_filter_for_look(look, custom_desc=custom_desc)
+        look_filter = _broll_filter_for_look(look)
 
         logger.info(
             "B-roll filtergraph wiring: broll_clip=%d look=%s label_in=[%s] label_out=[%s]",
@@ -765,9 +622,8 @@ def compile_render(
         input_index = 1  # 0 is base; b-roll start at 1
 
         # ---- B-ROLL FULLSCREEN CUTAWAYS ----
-        user_broll_look = getattr(edit_plan.broll, 'look', None) or getattr(edit_plan.broll, 'broll_look', None)
         broll_filters, last_label, input_index = build_broll_filtergraph_entries(
-            broll_clips, input_index, last_label, user_look=user_broll_look,
+            broll_clips, input_index, last_label,
         )
         filters.extend(broll_filters)
 
