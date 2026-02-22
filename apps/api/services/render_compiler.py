@@ -906,7 +906,11 @@ def compile_render(
             inputs.extend(["-i", oi["path"]])
 
         filters = []
-        last_label = "[0:v]"
+
+        # ✅ IMPORTANT: normalize base video timeline so t starts at 0
+        filters.append("[0:v]setpts=PTS-STARTPTS[base]")
+        last_label = "[base]"
+
         input_index = 1  # 0 is base; b-roll start at 1
 
         # ---- B-ROLL FULLSCREEN CUTAWAYS ----
