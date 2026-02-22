@@ -13,8 +13,10 @@ from apps.api.services.overlay_qc import detect_checkerboard_background
 from apps.api.services.render_compiler import (
     BROLL_LOOK_PRESET_FF_FILTER,
     BROLL_TV_LOOK_PRESET_FF_FILTER,
+    BROLL_HEAVY_FILM_FF_FILTER,
     choose_broll_look,
     _broll_filter_for_look,
+    build_broll_filtergraph_entries,
 )
 
 
@@ -194,10 +196,10 @@ class TestBrollLookChoice:
         assert look1 == look2
 
     def test_returns_valid_look(self):
-        """Look is always one of CLEAN, TV, HALFTONE."""
+        """Look is always one of CLEAN, TV, HEAVY, HALFTONE."""
         for i in range(20):
             look = choose_broll_look(f"clip_{i}", i, None, 20, {})
-            assert look in ("CLEAN", "TV", "HALFTONE")
+            assert look in ("CLEAN", "TV", "HEAVY", "HALFTONE")
 
     def test_no_consecutive_non_clean(self):
         """Two consecutive non-CLEAN looks are prevented."""
@@ -213,7 +215,7 @@ class TestBrollLookChoice:
             prev = look
 
     def test_caps_enforced(self):
-        """TV and HALFTONE stay within their percentage caps."""
+        """TV, HEAVY, and HALFTONE stay within their percentage caps."""
         counts: dict[str, int] = {}
         prev: str | None = None
         total = 20
@@ -222,10 +224,11 @@ class TestBrollLookChoice:
             counts[look] = counts.get(look, 0) + 1
             prev = look
 
-        # TV <= ceil(25% of 20) = 5, HALFTONE <= ceil(15% of 20) = 3
-        assert counts.get("TV", 0) <= max(1, int(total * 0.25 + 0.5))
+        # TV <= ceil(20% of 20) = 4, HEAVY <= ceil(20% of 20) = 4
+        assert counts.get("TV", 0) <= max(1, int(total * 0.20 + 0.5))
+        assert counts.get("HEAVY", 0) <= max(1, int(total * 0.20 + 0.5))
         # HALFTONE may be 0 if frei0r is unavailable
-        assert counts.get("HALFTONE", 0) <= max(1, int(total * 0.15 + 0.5))
+        assert counts.get("HALFTONE", 0) <= max(1, int(total * 0.10 + 0.5))
 
 
 class TestBrollFilterForLook:
@@ -237,38 +240,293 @@ class TestBrollFilterForLook:
     def test_tv_returns_tv_preset(self):
         assert _broll_filter_for_look("TV") == BROLL_TV_LOOK_PRESET_FF_FILTER
 
+    def test_heavy_returns_heavy_preset(self):
+        assert _broll_filter_for_look("HEAVY") == BROLL_HEAVY_FILM_FF_FILTER
+
     def test_unknown_defaults_to_clean(self):
         assert _broll_filter_for_look("UNKNOWN") == BROLL_LOOK_PRESET_FF_FILTER
 
 
-class TestBrollFilterInRenderCompiler:
-    """Tests that b-roll look filters appear in FFmpeg commands for b-roll only."""
+class TestBrollFiltergraphWiring:
+    """Tests that b-roll look filters are ACTUALLY wired into the final filtergraph.
 
-    def test_broll_filter_present_in_broll_path(self):
-        """When b-roll clips exist, the filter chain should include look presets."""
-        # We test by checking the filter string construction logic
-        from apps.api.services.render_compiler import BROLL_LOOK_PRESET_FF_FILTER
-        # The CLEAN preset must include eq= and unsharp= filters
-        assert "eq=contrast=" in BROLL_LOOK_PRESET_FF_FILTER
-        assert "unsharp=" in BROLL_LOOK_PRESET_FF_FILTER
-        assert "noise=" in BROLL_LOOK_PRESET_FF_FILTER
+    These tests call build_broll_filtergraph_entries() — the same function
+    used by compile_render() — and assert on the produced filter_complex
+    strings.  If anyone removes or bypasses the look filter, these FAIL.
+    """
 
-    def test_main_footage_commands_unchanged(self):
-        """Main footage ffmpeg commands should NOT include b-roll look filters."""
-        from apps.api.models.schemas import EditPlan
-        plan = EditPlan(
-            preset_id="snappy-creator",
-            main_cuts=[
-                {"start": 0, "end": 10},
-                {"start": 15, "end": 25},
-            ],
-            broll={"enabled": False, "strategy": "cutaway_fullscreen", "inserts": []},
-            music={"enabled": False},
+    def _two_clip_setup(self) -> list[dict]:
+        """Two b-roll clips for testing."""
+        return [
+            {"path": "/tmp/broll_a.mp4", "start": 5.0, "end": 8.0},
+            {"path": "/tmp/broll_b.mp4", "start": 15.0, "end": 18.0},
+        ]
+
+    # ---- 1. Every b-roll clip has an input label, a look filter, and an output ----
+    def test_each_clip_has_raw_look_out_labels(self):
+        """Each b-roll clip must produce [b{i}_raw], [b{i}_look], [b{i}_out]."""
+        from apps.api.services.render_compiler import build_broll_filtergraph_entries
+        clips = self._two_clip_setup()
+        filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+        joined = ";".join(filters)
+
+        for i in range(len(clips)):
+            assert f"[b{i}_raw]" in joined, f"Missing [b{i}_raw] label"
+            assert f"[b{i}_look]" in joined, f"Missing [b{i}_look] label"
+            assert f"[b{i}_out]" in joined, f"Missing [b{i}_out] label"
+
+    # ---- 2. The look filter appears between _raw and _look labels ----
+    def test_look_filter_between_raw_and_look_labels(self):
+        """The look preset string must be sandwiched: [b{i}_raw]<filter>[b{i}_look]."""
+        from apps.api.services.render_compiler import (
+            build_broll_filtergraph_entries,
+            BROLL_LOOK_PRESET_FF_FILTER,
+            BROLL_TV_LOOK_PRESET_FF_FILTER,
         )
-        # The main segment commands use vf_base (scale+pad) only
-        # Verify no look preset leaks into main footage path
-        assert plan.broll.enabled is False
-        assert len(plan.broll.inserts) == 0
-        # The compile_render function only applies look filters inside the
-        # "B-ROLL FULLSCREEN CUTAWAYS" block, which is gated on broll_clips
-        # being non-empty. With no b-roll, the block is skipped entirely.
+        clips = self._two_clip_setup()
+        filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+
+        for i in range(len(clips)):
+            # Find the filter line that produces [b{i}_look]
+            look_lines = [f for f in filters if f.endswith(f"[b{i}_look]")]
+            assert len(look_lines) == 1, f"Expected exactly one _look producer for clip {i}"
+            line = look_lines[0]
+            # It must start with [b{i}_raw] and contain a known preset
+            assert line.startswith(f"[b{i}_raw]"), (
+                f"Look filter for clip {i} does not consume [b{i}_raw]: {line}"
+            )
+            # Must contain at least one preset's core filter
+            has_preset = (
+                BROLL_LOOK_PRESET_FF_FILTER in line
+                or BROLL_TV_LOOK_PRESET_FF_FILTER in line
+            )
+            assert has_preset, f"Look filter for clip {i} has no known preset: {line}"
+
+    # ---- 3. Overlay/composite step uses _look labels, NOT _raw ----
+    def test_composite_uses_look_labels_not_raw(self):
+        """The overlay step must reference [b{i}_look], never [b{i}_raw]."""
+        from apps.api.services.render_compiler import build_broll_filtergraph_entries
+        clips = self._two_clip_setup()
+        filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+
+        for i in range(len(clips)):
+            # Find the overlay line that ENDS with [b{i}_out] (the producer)
+            overlay_lines = [f for f in filters if "overlay=" in f and f.endswith(f"[b{i}_out]")]
+            assert len(overlay_lines) == 1, f"Expected one overlay line for clip {i}"
+            line = overlay_lines[0]
+            assert f"[b{i}_look]" in line, (
+                f"Overlay for clip {i} must use [b{i}_look]: {line}"
+            )
+            assert f"[b{i}_raw]overlay" not in line, (
+                f"Overlay for clip {i} must NOT use raw label: {line}"
+            )
+
+    # ---- 4. No b-roll => zero b-roll filter lines ----
+    def test_no_broll_produces_empty_filters(self):
+        """With zero b-roll clips, no filter lines are produced."""
+        from apps.api.services.render_compiler import build_broll_filtergraph_entries
+        filters, last, idx = build_broll_filtergraph_entries([], 1, "[0:v]")
+        assert filters == []
+        assert last == "[0:v]"
+        assert idx == 1
+
+    # ---- 5. Main footage base filter is NOT in b-roll entries ----
+    def test_main_footage_filter_not_in_broll(self):
+        """B-roll filtergraph must NOT contain main-footage scaling/padding filters."""
+        from apps.api.services.render_compiler import build_broll_filtergraph_entries
+        clips = self._two_clip_setup()
+        filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+        joined = ";".join(filters)
+
+        # Main footage uses pad= for letterboxing; b-roll uses crop= for fill
+        assert "pad=1080:1920" not in joined, "Main footage pad filter leaked into b-roll"
+        # Main footage uses force_original_aspect_ratio=decrease; b-roll uses increase
+        assert "force_original_aspect_ratio=decrease" not in joined
+
+    # ---- 6. The filter chain is ordered: raw → look → overlay ----
+    def test_filter_chain_order(self):
+        """For each clip, the three stages appear in the correct order."""
+        from apps.api.services.render_compiler import build_broll_filtergraph_entries
+        clips = [{"path": "/tmp/b.mp4", "start": 3.0, "end": 5.0}]
+        filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+
+        # Find indices of the three stages
+        raw_idx = next(j for j, f in enumerate(filters) if "[b0_raw]" in f and "trim=" in f)
+        look_idx = next(j for j, f in enumerate(filters) if f.endswith("[b0_look]"))
+        overlay_idx = next(j for j, f in enumerate(filters) if "overlay=" in f and "[b0_out]" in f)
+
+        assert raw_idx < look_idx < overlay_idx, (
+            f"Wrong order: raw@{raw_idx} look@{look_idx} overlay@{overlay_idx}"
+        )
+
+    # ---- 7. Single-clip regression: overlay references [b0_look] not [b0_raw] ----
+    def test_single_clip_regression(self):
+        """Regression: the composite must reference _look, not _raw."""
+        from apps.api.services.render_compiler import build_broll_filtergraph_entries
+        clips = [{"path": "/tmp/only.mp4", "start": 2.0, "end": 4.0}]
+        filters, last, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+        joined = ";".join(filters)
+
+        # The overlay line must have [b0_look]overlay=...
+        assert "[b0_look]overlay=" in joined
+        # And must NOT have [b0_raw]overlay=...
+        assert "[b0_raw]overlay=" not in joined
+        # Final label chains to [b0_out]
+        assert last == "[b0_out]"
+
+    # ---- 8. Snapshot: main-footage vf_base is exactly scale+pad (unchanged) ----
+    def test_main_footage_vf_base_unchanged(self):
+        """The main-footage base filter string is exactly the expected scale+pad."""
+        # This is the string used in compile_render for fit_mode="fit"
+        expected_vf = (
+            "scale=1080:1920:force_original_aspect_ratio=decrease,"
+            "pad=1080:1920:(ow-iw)/2:(oh-ih)/2"
+        )
+        # We import compile_render source and check the string is present
+        import inspect
+        from apps.api.services.render_compiler import compile_render
+        src = inspect.getsource(compile_render)
+        assert expected_vf in src, "Main footage vf_base has been modified"
+
+
+class TestHeavyFilmPreset:
+    """Tests for the HEAVY film + motion b-roll preset."""
+
+    def test_heavy_preset_contains_all_components(self):
+        """HEAVY preset string must include all 7 required effect components."""
+        # 1) VHS softness: boxblur + unsharp
+        assert "boxblur=" in BROLL_HEAVY_FILM_FF_FILTER
+        assert "unsharp=" in BROLL_HEAVY_FILM_FF_FILTER
+        # 2) Grain: noise filter
+        assert "noise=" in BROLL_HEAVY_FILM_FF_FILTER
+        assert "c0s=" in BROLL_HEAVY_FILM_FF_FILTER
+        # 3) Flicker: eq with brightness modulated by sin
+        assert "sin(" in BROLL_HEAVY_FILM_FF_FILTER
+        assert "eval=frame" in BROLL_HEAVY_FILM_FF_FILTER
+        # 4) Scanlines: drawgrid
+        assert "drawgrid=" in BROLL_HEAVY_FILM_FF_FILTER
+        # 5) Chroma bleed: rgbashift
+        assert "rgbashift=" in BROLL_HEAVY_FILM_FF_FILTER
+        # 6) Halation: tested separately (split/blur/blend in filtergraph)
+        # 7) Zoom/pan: tested separately (zoompan in filtergraph)
+
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    @patch("apps.api.services.render_compiler._probe_frei0r", return_value=False)
+    def test_heavy_filtergraph_has_halation_stages(self, _mock_frei0r, _mock_heavy):
+        """HEAVY clips must produce split/blur/blend stages for halation."""
+        # Force HEAVY by using a key that hashes into the 70-89 bucket
+        # We'll try keys until we find one, or mock choose_broll_look
+        clips = [{"path": "/tmp/heavy_test.mp4", "start": 4.0, "end": 7.0}]
+
+        with patch(
+            "apps.api.services.render_compiler.choose_broll_look", return_value="HEAVY"
+        ):
+            filters, last, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+
+        joined = ";".join(filters)
+
+        # Halation stages: split, gblur, blend
+        assert "split[" in joined, "Missing split for halation"
+        assert "gblur=" in joined, "Missing gblur for halation"
+        assert "blend=" in joined, "Missing blend for halation"
+        assert "all_mode=screen" in joined, "Blend must use screen mode"
+
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    @patch("apps.api.services.render_compiler._probe_frei0r", return_value=False)
+    def test_heavy_filtergraph_has_zoompan_motion(self, _mock_frei0r, _mock_heavy):
+        """HEAVY clips must include zoompan for micro push-in motion."""
+        clips = [{"path": "/tmp/heavy_motion.mp4", "start": 2.0, "end": 5.0}]
+
+        with patch(
+            "apps.api.services.render_compiler.choose_broll_look", return_value="HEAVY"
+        ):
+            filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+
+        joined = ";".join(filters)
+
+        assert "zoompan=" in joined, "Missing zoompan for micro motion"
+        assert "s=1080x1920" in joined, "Zoompan must preserve resolution"
+        assert "d=1" in joined, "Zoompan d=1 required to preserve frame count"
+
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    @patch("apps.api.services.render_compiler._probe_frei0r", return_value=False)
+    def test_heavy_wiring_still_uses_look_label(self, _mock_frei0r, _mock_heavy):
+        """HEAVY clips must still produce [b{i}_look] and use it in overlay."""
+        clips = [{"path": "/tmp/heavy_wire.mp4", "start": 3.0, "end": 6.0}]
+
+        with patch(
+            "apps.api.services.render_compiler.choose_broll_look", return_value="HEAVY"
+        ):
+            filters, last, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+
+        joined = ";".join(filters)
+
+        # Must still have the standard labels
+        assert "[b0_raw]" in joined
+        assert "[b0_look]" in joined
+        assert "[b0_out]" in joined
+        # Overlay must use [b0_look], not any intermediate label
+        overlay_lines = [f for f in filters if "overlay=" in f and f.endswith("[b0_out]")]
+        assert len(overlay_lines) == 1
+        assert "[b0_look]" in overlay_lines[0]
+
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    @patch("apps.api.services.render_compiler._probe_frei0r", return_value=False)
+    def test_heavy_base_filter_present(self, _mock_frei0r, _mock_heavy):
+        """HEAVY clips must apply the base BROLL_HEAVY_FILM_FF_FILTER."""
+        clips = [{"path": "/tmp/heavy_base.mp4", "start": 1.0, "end": 3.0}]
+
+        with patch(
+            "apps.api.services.render_compiler.choose_broll_look", return_value="HEAVY"
+        ):
+            filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+
+        joined = ";".join(filters)
+
+        # The base filter must appear in the chain
+        assert BROLL_HEAVY_FILM_FF_FILTER in joined, (
+            "HEAVY base filter missing from filtergraph"
+        )
+
+    @patch("apps.api.services.render_compiler._probe_heavy_filters", return_value=True)
+    @patch("apps.api.services.render_compiler._probe_frei0r", return_value=False)
+    def test_heavy_does_not_affect_overlay_images(self, _mock_frei0r, _mock_heavy):
+        """HEAVY look filter must NOT appear in overlay image filter lines."""
+        # The build_broll_filtergraph_entries only handles b-roll; overlays
+        # are handled separately in compile_render. This test verifies the
+        # separation by checking no overlay-related labels are produced.
+        clips = [{"path": "/tmp/heavy_only.mp4", "start": 5.0, "end": 8.0}]
+
+        with patch(
+            "apps.api.services.render_compiler.choose_broll_look", return_value="HEAVY"
+        ):
+            filters, _, _ = build_broll_filtergraph_entries(clips, 1, "[0:v]")
+
+        joined = ";".join(filters)
+        # No overlay image labels (ov0, vo0 etc.) should appear
+        assert "ov0" not in joined
+        assert "vo0" not in joined
+        # No format=rgba (overlay image prep) should appear
+        assert "format=rgba" not in joined
+
+    def test_heavy_preset_vhs_softness_values(self):
+        """VHS softness must have specific boxblur + unsharp parameters."""
+        assert "boxblur=2:1" in BROLL_HEAVY_FILM_FF_FILTER
+        assert "unsharp=5:5:1.2" in BROLL_HEAVY_FILM_FF_FILTER
+
+    def test_heavy_preset_grain_strength(self):
+        """Grain noise must be heavier than TV preset (c0s >= 12)."""
+        import re
+        heavy_match = re.search(r"c0s=(\d+)", BROLL_HEAVY_FILM_FF_FILTER)
+        tv_match = re.search(r"c0s=(\d+)", BROLL_TV_LOOK_PRESET_FF_FILTER)
+        assert heavy_match and tv_match
+        assert int(heavy_match.group(1)) > int(tv_match.group(1))
+
+    def test_heavy_preset_chroma_shift_bounded(self):
+        """Chroma shift must be modest (abs(rh) <= 5, abs(bh) <= 5)."""
+        import re
+        rh = re.search(r"rh=(-?\d+)", BROLL_HEAVY_FILM_FF_FILTER)
+        bh = re.search(r"bh=(-?\d+)", BROLL_HEAVY_FILM_FF_FILTER)
+        assert rh and bh
+        assert abs(int(rh.group(1))) <= 5
+        assert abs(int(bh.group(1))) <= 5
