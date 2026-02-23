@@ -58,7 +58,7 @@ BROLL_HEAVY_FILM_FF_FILTER = (
     # Grain
     "noise=c0s=18:c0f=t+u,"
     # Flicker: subtle brightness oscillation (~3 Hz, small amplitude)
-    "eq=brightness='0.015*sin(2*PI*t*3)':eval=frame,"
+    "eq=brightness=0.015*sin(2*PI*t*3):eval=frame,"
     # Scanlines: thin dark horizontal lines every 4 pixels
     "drawgrid=w=0:h=4:t=1:c=black@0.07,"
     # Chroma bleed: slight horizontal red/blue channel shift
@@ -102,7 +102,7 @@ _HEAVY_HALATION_BLEND_OPACITY = 0.18
 
 # Zoompan micro-motion: subtle push-in (1.00 -> 1.03 over clip duration).
 # d=1 means 1 output frame per input frame -> no fps/duration change.
-_HEAVY_ZOOMPAN_EXPR = "zoompan=z='min(1.03,1+0.001*on)':d=1:s=1080x1920"
+_HEAVY_ZOOMPAN_EXPR = "zoompan=z=min(1.03\\,1+0.001*on):d=1:s=1080x1920"
 
 # HALFTONE uses frei0r — only defined when the filter is available at runtime.
 # If frei0r is absent the scheduler falls back to CLEAN or TV.
@@ -1050,7 +1050,7 @@ def compile_render(
 
                 filters_retry.append(
                     f"{last_label_retry}[{look_label}]overlay="
-                    f"enable='between(t,{bc['start']:.3f},{bc['end']:.3f})'[{out_label}]"
+                    f"enable=between(t\\,{bc['start']:.3f}\\,{bc['end']:.3f})[{out_label}]"
                 )
                 last_label_retry = f"[{out_label}]"
 
@@ -1074,7 +1074,7 @@ def compile_render(
                 filters_retry.append(
                     f"{last_label_retry}[{prep}]overlay="
                     f"x={x_px}:y={y_px}:"
-                    f"enable='between(t,{oi['start']:.3f},{oi['end']:.3f})'[{out}]"
+                    f"enable=between(t\\,{oi['start']:.3f}\\,{oi['end']:.3f})[{out}]"
                 )
                 last_label_retry = f"[{out}]"
 
