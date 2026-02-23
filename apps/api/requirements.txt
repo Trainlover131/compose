@@ -15,3 +15,8 @@ pydantic==2.10.4
 numpy==2.2.1
 Pillow==11.1.0
 faster-whisper==1.1.0
+# OpenCLIP for asset ranking (CPU-only torch)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
+open_clip_torch==2.29.0

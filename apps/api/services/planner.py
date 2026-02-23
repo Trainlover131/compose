@@ -24,6 +24,8 @@ import anthropic
 from apps.api.config import (
     ANTHROPIC_API_KEY, DEMO_MODE, GEMINI_API_KEY,
     NANOBANANA_API_KEY, LOCAL_STORAGE_PATH,
+    PEXELS_API_KEY, OVERLAY_SOURCE_PRIMARY, OVERLAY_SOURCE_FALLBACK_AI,
+    CLIP_ENABLED, CLIP_CANDIDATES_PER_VARIANT,
 )
 from apps.api.models.presets import get_preset
 from apps.api.models.schemas import EditPlan
@@ -1279,16 +1281,163 @@ def plan_edit(
     return plan
 
 
+def _try_pexels_overlay(item) -> Optional[str]:
+    """Try to find and download a Pexels photo for the overlay item.
+
+    Returns local file path on success, None on failure.
+    Only modifies item.asset_path and item.source — never touches
+    placement, timing, or animation.
+    """
+    try:
+        from apps.api.services.media_ranker.query_variants import variants
+        from apps.api.services.media_ranker.pexels_client import (
+            search_photos as mr_search_photos,
+        )
+        from apps.api.services.media_ranker.clip_ranker import rank_image_candidates
+
+        query = item.query
+        qvars = variants(query)
+        logger.info(
+            "Pexels overlay: query=%s variants=%d",
+            query[:80], len(qvars),
+        )
+
+        # Pool candidates across variants (dedupe by id)
+        seen_ids: set[int] = set()
+        pool: list[dict] = []
+        for v in qvars:
+            results = mr_search_photos(v, per_page=CLIP_CANDIDATES_PER_VARIANT)
+            for c in results:
+                cid = c.get("id")
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    c["_variant"] = v
+                    pool.append(c)
+
+        logger.info(
+            "Pexels overlay: pool=%d candidates for query=%s",
+            len(pool), query[:80],
+        )
+
+        if not pool:
+            return None
+
+        # CLIP rank
+        if CLIP_ENABLED:
+            ranked = rank_image_candidates(pool, query=query, k=1)
+        else:
+            ranked = pool[:1]
+
+        if not ranked:
+            return None
+
+        top = ranked[0]
+        final_score = top.get("final_score", 0.0)
+        pos_score = top.get("pos_score", 0.0)
+
+        logger.info(
+            "Pexels overlay top1: id=%s alt=%s pos=%.4f neg=%.4f "
+            "clip=%.4f heur=%.4f final=%.4f variant=%s",
+            top.get("id"), (top.get("alt") or "")[:60],
+            top.get("pos_score", 0), top.get("neg_score", 0),
+            top.get("clip_score", 0), top.get("heuristic_score", 0),
+            final_score, top.get("variant_used", ""),
+        )
+
+        # Threshold check
+        if final_score < 0.10 or pos_score < 0.20:
+            logger.info(
+                "Pexels overlay: below threshold (final=%.4f pos=%.4f), "
+                "falling back to NanoBanana",
+                final_score, pos_score,
+            )
+            return None
+
+        # Download to overlay cache
+        download_url = top.get("download_url")
+        if not download_url:
+            return None
+
+        _OVERLAY_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        ext = ".jpg"
+        if ".png" in download_url.lower():
+            ext = ".png"
+        cache_key = hashlib.sha256(
+            f"pexels:{top['id']}:{download_url}".encode()
+        ).hexdigest()[:24]
+        dest = _OVERLAY_CACHE_DIR / f"pexels_{cache_key}{ext}"
+
+        if dest.exists():
+            logger.info("Pexels overlay cache hit: %s", dest)
+            return str(dest)
+
+        from apps.api.services.media_ranker.http_utils import download_to_file
+        ok = download_to_file(download_url, dest, timeout_s=10.0, retries=1)
+        if ok and dest.exists():
+            logger.info(
+                "Pexels overlay downloaded: %s (id=%s)", dest, top.get("id"),
+            )
+            return str(dest)
+
+        return None
+
+    except Exception as exc:
+        logger.warning("Pexels overlay attempt failed (non-fatal): %s", exc)
+        return None
+
+
 def _generate_overlay_assets(plan: EditPlan) -> None:
-    """Best-effort: generate NanoBanana images for AI-sourced overlays."""
-    if not _NB_KEY:
-        return
+    """Best-effort: generate overlay images.
+
+    Strategy per item (when source=="ai" and query exists):
+      1) If OVERLAY_SOURCE_PRIMARY=="pexels" and PEXELS_API_KEY set:
+         try Pexels photo search + CLIP ranking.
+      2) If Pexels fails or below threshold, fall back to NanoBanana
+         (if OVERLAY_SOURCE_FALLBACK_AI is true).
+
+    IMPORTANT: This function ONLY sets item.asset_path and item.source.
+    It NEVER modifies placement, timing, animation, or any other field.
+    """
+    use_pexels = (
+        OVERLAY_SOURCE_PRIMARY == "pexels"
+        and bool(PEXELS_API_KEY)
+    )
+
     for item in plan.overlays.items:
-        if item.source == "ai" and not item.asset_path and item.query:
+        if item.asset_path or not item.query:
+            continue
+        if item.source != "ai":
+            continue
+
+        chosen_source = None
+
+        # Step A: Try Pexels first
+        if use_pexels:
+            pexels_path = _try_pexels_overlay(item)
+            if pexels_path:
+                item.asset_path = pexels_path
+                item.source = "pexels"
+                chosen_source = "pexels"
+                logger.info(
+                    "Overlay source=pexels for query=%s", item.query[:80],
+                )
+
+        # Step B: Fall back to NanoBanana
+        if not chosen_source and OVERLAY_SOURCE_FALLBACK_AI and _NB_KEY:
             overlay_dict = item.model_dump()
             path = _generate_overlay_image_from_item(overlay_dict)
             if path:
                 item.asset_path = path
+                chosen_source = "ai"
+                logger.info(
+                    "Overlay source=ai (NanoBanana) for query=%s",
+                    item.query[:80],
+                )
+
+        if not chosen_source:
+            logger.info(
+                "Overlay: no asset generated for query=%s", item.query[:80],
+            )
 
 
 # ===================================================================

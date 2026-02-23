@@ -32,6 +32,22 @@ NANOBANANA_API_KEY = os.getenv("NANOBANANA_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
+# Asset selection: Pexels overlay + CLIP ranking
+OVERLAY_SOURCE_PRIMARY = os.getenv("OVERLAY_SOURCE_PRIMARY", "pexels")
+OVERLAY_SOURCE_FALLBACK_AI = os.getenv("OVERLAY_SOURCE_FALLBACK_AI", "true").lower() in ("true", "1", "yes")
+CLIP_ENABLED = os.getenv("CLIP_ENABLED", "true").lower() in ("true", "1", "yes")
+CLIP_MODEL = os.getenv("CLIP_MODEL", "ViT-B-32")
+CLIP_PRETRAINED = os.getenv("CLIP_PRETRAINED", "laion2b_s34b_b79k")
+CLIP_DEVICE = os.getenv("CLIP_DEVICE", "cpu")
+CLIP_QUERY_VARIANTS = int(os.getenv("CLIP_QUERY_VARIANTS", "4"))
+CLIP_CANDIDATES_PER_VARIANT = int(os.getenv("CLIP_CANDIDATES_PER_VARIANT", "6"))
+CLIP_FRAMES_PER_VIDEO = int(os.getenv("CLIP_FRAMES_PER_VIDEO", "3"))
+CLIP_MAX_CONCURRENT_DOWNLOADS = int(os.getenv("CLIP_MAX_CONCURRENT_DOWNLOADS", "4"))
+CLIP_MAX_CONCURRENT_VIDEO_EXTRACTS = int(os.getenv("CLIP_MAX_CONCURRENT_VIDEO_EXTRACTS", "2"))
+CLIP_HTTP_TIMEOUT_S = float(os.getenv("CLIP_HTTP_TIMEOUT_S", "2.5"))
+CLIP_HTTP_RETRY = int(os.getenv("CLIP_HTTP_RETRY", "1"))
+CLIP_TARGET_ASPECT = os.getenv("CLIP_TARGET_ASPECT", "9:16")
+
 # Database
 DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql://compose:compose@localhost:5432/compose"
