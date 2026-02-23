@@ -359,9 +359,6 @@ def compile_motion_for_broll(bc: dict, motion_enabled: bool) -> str:
     in_dur = max(0.06, min(0.25, in_dur))
     out_dur = max(0.06, min(0.25, out_dur))
 
-    # t here is the main timeline time because b-roll PTS is offset with setpts to bc['start']/TB
-    u = f"((t-{start:.3f})/{dur:.6f})"
-
     # NOTE: On Railway (ffmpeg 7.1.3 debian build), crop expressions do NOT accept `t`,
     # but they DO accept `n` (frame index). So we drive motion with normalized frame progress.
     # Minimal assumption: render at 30fps for motion math.
@@ -369,9 +366,8 @@ def compile_motion_for_broll(bc: dict, motion_enabled: bool) -> str:
     n_frames = max(2, int(round(dur * fps)))
     denom = max(1, n_frames - 1)
 
-    # uN is 0..1 across the clip using frame index `n`
-    u = f"(n/{denom})"
-    u = _clamp01_expr(u)
+    # u is 0..1 across the clip using frame index `n`
+    u = _clamp01_expr(f"(n/{denom})")
 
     if mtype == "fade":
         # Subtle triangle brightness ramp: 0 at edges, peak mid-clip.
