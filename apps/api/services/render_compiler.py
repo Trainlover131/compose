@@ -6,6 +6,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +17,21 @@ logger = logging.getLogger(__name__)
 
 # Maximum chars of FFmpeg stderr to include in error messages
 _MAX_STDERR_CHARS = 2000
+
+def _find_weird_chars(s: str) -> list[tuple[int, str, int, str]]:
+    """
+    Returns (index, char, ord, unicode_category) for characters that commonly
+    break ffmpeg argv parsing and filtergraph parsing:
+    - Cc (control) and Cf (format/zero-width)
+    - Unicode line separators U+2028/U+2029
+    """
+    out: list[tuple[int, str, int, str]] = []
+    for i, ch in enumerate(s or ""):
+        o = ord(ch)
+        cat = unicodedata.category(ch)  # e.g. "Cf" (format), "Cc" (control)
+        if cat in ("Cf", "Cc") or ch in {"\u2028", "\u2029"} or (cat == "Zs" and ch != " "):
+            out.append((i, ch, o, cat))
+    return out
 
 # ---------------------------------------------------------------------------
 # B-roll look presets (video filters applied to b-roll clips ONLY)
@@ -581,6 +597,22 @@ def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subproces
                 tail, [ord(c) for c in tail]
             )
 
+    # 🔎 Forensic: log the EXACT filter_complex_script contents that will be executed
+    if "-filter_complex_script" in cmd:
+        i = cmd.index("-filter_complex_script") + 1
+        if i < len(cmd):
+            fc_script_path = cmd[i]
+            logger.info("EXEC fc_script_path=%r", fc_script_path)
+            try:
+                txt = Path(fc_script_path).read_text(encoding="utf-8", errors="strict")
+                tail = txt[-12:] if txt else ""
+                logger.info(
+                    "EXEC fc_script tail_repr=%r tail_codepoints=%s",
+                    tail, [ord(c) for c in tail]
+                )
+            except Exception as e:
+                logger.warning("Could not read filter_complex_script for forensics: %s", e)
+
     result = subprocess.run(cmd, capture_output=True, timeout=timeout)
     if result.returncode != 0:
         stderr_text = result.stderr.decode("utf-8", errors="replace")
@@ -592,38 +624,43 @@ def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subproces
     return result
 
 def _sanitize_fc(fc: str) -> str:
-    """
-    Sanitize a filter_complex string before passing to FFmpeg.
-
-    - Strips normal whitespace
-    - Removes balanced wrapping quotes
-    - Removes any trailing/leading quote-like chars
-    - Removes trailing/leading zero-width / BOM / control chars that can break argv parsing
-    """
     if fc is None:
         return ""
 
-    # First strip normal whitespace
+    # Normalize and strip ordinary whitespace
+    fc = unicodedata.normalize("NFC", fc)
     fc = fc.strip()
 
     # Remove balanced wrapping quotes
     if (fc.startswith("'") and fc.endswith("'")) or (fc.startswith('"') and fc.endswith('"')):
         fc = fc[1:-1].strip()
 
-    # Characters that have caused “ghost quoting” bugs in the wild
     quote_like = {"'", '"', "’", "‘", "“", "”"}
     invisible = {"\u200b", "\u200c", "\u200d", "\ufeff"}  # zero-width + BOM
+    line_seps = {"\u2028", "\u2029"}
 
-    # Strip any combination of these from BOTH ends
+    # Strip quote-like/invisible chars from BOTH ends repeatedly
     def strip_ends(s: str) -> str:
-        while s and (s[0] in quote_like or s[0] in invisible):
+        while s and (s[0] in quote_like or s[0] in invisible or s[0] in line_seps):
             s = s[1:]
-        while s and (s[-1] in quote_like or s[-1] in invisible):
+        while s and (s[-1] in quote_like or s[-1] in invisible or s[-1] in line_seps):
             s = s[:-1]
         return s
 
-    fc2 = strip_ends(fc).strip()
-    return fc2
+    fc = strip_ends(fc).strip()
+
+    # Remove ALL control/format chars anywhere (Cc/Cf) and U+2028/U+2029
+    cleaned: list[str] = []
+    for ch in fc:
+        cat = unicodedata.category(ch)
+        if cat in ("Cc", "Cf") or ch in line_seps or (cat == "Zs" and ch != " "):
+            continue
+        cleaned.append(ch)
+    fc = "".join(cleaned)
+
+    # Final strip pass
+    fc = strip_ends(fc).strip()
+    return fc
 
 
 def generate_ass_subtitles(
@@ -1016,18 +1053,25 @@ def compile_render(
 
         fc = ";".join(filters) if filters else "null"
         fc = _sanitize_fc(fc)
-        # Forensic logging: show the exact last chars and codepoints
-        tail = fc[-12:]
-        logger.info("filter_complex tail_repr=%r tail_codepoints=%s", tail, [ord(c) for c in tail])
 
-        # Hard fail if we still have ghost quoting — do NOT silently fall back
-        if fc and fc[-1] in {"'", '"', "’", "‘", "“", "”", "\u200b", "\u200c", "\u200d", "\ufeff"}:
-            raise RuntimeError(f"filter_complex ends with illegal char: tail={tail!r} codepoints={[ord(c) for c in tail]}")
-        logger.info(f"filter_complex len={len(fc)} head={fc[:200]} tail={fc[-200:]}")
+        weird = _find_weird_chars(fc)
+        if weird:
+            for i, ch, o, cat in weird[:8]:
+                ctx = fc[max(0, i - 20): i + 20]
+                logger.error("WEIRD_CHAR idx=%d ord=%d cat=%s repr=%r ctx=%r", i, o, cat, ch, ctx)
+            raise RuntimeError(f"filter_complex contains {len(weird)} control/format chars; refusing to run")
+
+        logger.info("filter_complex last300=%r", fc[-300:])
+        logger.info("filter_complex tail_codepoints=%s", [ord(c) for c in fc[-40:]])
+        logger.info("filter_complex len=%d head=%r tail=%r", len(fc), fc[:200], fc[-200:])
+
+        # Write filtergraph to a script file to avoid argv parsing / invisible-char issues
+        fc_path = work / "filter_complex.txt"
+        fc_path.write_text(fc, encoding="utf-8", errors="strict")
 
         cmd = ["ffmpeg", "-y"] + inputs + [
             "-filter_complex_threads", "1",
-            "-filter_complex", fc,
+            "-filter_complex_script", str(fc_path),
             "-map", map_v, "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
             "-threads", "2",
@@ -1146,9 +1190,26 @@ def compile_render(
             fc_retry = ";".join(filters_retry) if filters_retry else "null"
             fc_retry = _sanitize_fc(fc_retry)
 
+            # --- hard fail on any control/format chars in retry graph too ---
+            weird_retry = _find_weird_chars(fc_retry)
+            if weird_retry:
+                for i, ch, o, cat in weird_retry[:8]:
+                    ctx = fc_retry[max(0, i - 20): i + 20]
+                    logger.error("WEIRD_CHAR_RETRY idx=%d ord=%d cat=%s repr=%r ctx=%r", i, o, cat, ch, ctx)
+                raise RuntimeError(
+                    f"filter_complex_retry contains {len(weird_retry)} control/format chars; refusing to run"
+                )
+
+            logger.info("filter_complex_retry last300=%r", fc_retry[-300:])
+            logger.info("filter_complex_retry tail_codepoints=%s", [ord(c) for c in fc_retry[-40:]])
+
+            # Write retry filtergraph to script file to avoid argv parsing issues
+            fc_retry_path = work / "filter_complex_retry.txt"
+            fc_retry_path.write_text(fc_retry, encoding="utf-8", errors="strict")
+
             cmd_retry = ["ffmpeg", "-y"] + inputs + [
                 "-filter_complex_threads", "1",
-                "-filter_complex", fc_retry,
+                "-filter_complex_script", str(fc_retry_path),
                 "-map", map_v_retry, "-map", "0:a?",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-threads", "2",
