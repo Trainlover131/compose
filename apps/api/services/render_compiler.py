@@ -71,17 +71,12 @@ BROLL_HEAVY_FILM_FF_FILTER = (
 # user does not specify an explicit look.  Clean color-grade + subtle texture.
 BROLL_DEFAULT_FILM_FF_FILTER = (
     "format=yuv420p,"
-    # keep contrast; bump saturation slightly (still restrained)
     "eq=contrast=1.20:saturation=1.03:brightness=0.00:gamma_r=1.00:gamma_g=1.00:gamma_b=1.03,"
-    # push teal in shadows (bs up, rs down), warm highlights (rh up, bh down)
-    # keep midtones restrained to avoid purple skin
     "colorbalance="
     "rs=-0.055:gs=0.010:bs=0.060:"
     "rm=-0.010:gm=0.000:bm=0.012:"
     "rh=0.085:gh=0.020:bh=-0.085,"
-    # keep the highlight cap (prevents blowout)
-    "curves=master=0/0\\ 0.75/0.76\\ 0.90/0.88\\ 1/0.95,"
-    # texture: slightly stronger
+    "curves=master=0/0|0.75/0.76|0.90/0.88|1/0.95,"
     "noise=c0s=6:c0f=t+u,"
     "drawgrid=w=0:h=3:t=1:c=black@0.055,"
     "vignette=PI/6"
@@ -993,7 +988,7 @@ def compile_render(
             _run_ffmpeg(cmd, "layer-broll-overlays-captions", timeout=MAX_RENDER_TIMEOUT_SEC)
             current_video = str(layered_path)
         except RuntimeError as e:
-            logger.warning(f"Layer pass failed (non-fatal): {e}")
+            logger.error("MOTION PASS FAILED — output will have NO MOTION unless fixed. Error: %s", e)
             logger.warning("Retrying layer pass with ALL motion disabled (keeping b-roll + overlays + same enable windows).")
 
             # Rebuild filter graph with motion disabled by stripping motion tails:
