@@ -569,6 +569,18 @@ def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subproces
     Raises RuntimeError with the last ~2k chars of stderr on failure.
     """
     logger.info(f"FFmpeg [{step_name}]: {' '.join(cmd[:6])}...")
+
+    # 🔎 Forensic: log the EXACT filter_complex argument that will be executed
+    if "-filter_complex" in cmd:
+        i = cmd.index("-filter_complex") + 1
+        if i < len(cmd):
+            fc_arg = cmd[i]
+            tail = fc_arg[-12:] if fc_arg else ""
+            logger.info(
+                "EXEC fc_arg tail_repr=%r tail_codepoints=%s",
+                tail, [ord(c) for c in tail]
+            )
+
     result = subprocess.run(cmd, capture_output=True, timeout=timeout)
     if result.returncode != 0:
         stderr_text = result.stderr.decode("utf-8", errors="replace")
@@ -580,23 +592,38 @@ def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subproces
     return result
 
 def _sanitize_fc(fc: str) -> str:
-    """Sanitize a filter_complex string before passing to FFmpeg.
-
-    Strips leading/trailing whitespace, removes accidental wrapping quotes,
-    and removes a trailing unmatched single quote.  Does NOT modify internal
-    filter expressions (commas, backslashes, etc.).
     """
+    Sanitize a filter_complex string before passing to FFmpeg.
+
+    - Strips normal whitespace
+    - Removes balanced wrapping quotes
+    - Removes any trailing/leading quote-like chars
+    - Removes trailing/leading zero-width / BOM / control chars that can break argv parsing
+    """
+    if fc is None:
+        return ""
+
+    # First strip normal whitespace
     fc = fc.strip()
-    # Remove balanced wrapping quotes (accidental shell-style quoting)
+
+    # Remove balanced wrapping quotes
     if (fc.startswith("'") and fc.endswith("'")) or (fc.startswith('"') and fc.endswith('"')):
-        fc = fc[1:-1]
-    # Remove trailing unmatched single quote
-    if fc.endswith("'") and not fc.startswith("'"):
-        fc = fc[:-1]
-    # Remove trailing unmatched double quote
-    if fc.endswith('"') and not fc.startswith('"'):
-        fc = fc[:-1]
-    return fc
+        fc = fc[1:-1].strip()
+
+    # Characters that have caused “ghost quoting” bugs in the wild
+    quote_like = {"'", '"', "’", "‘", "“", "”"}
+    invisible = {"\u200b", "\u200c", "\u200d", "\ufeff"}  # zero-width + BOM
+
+    # Strip any combination of these from BOTH ends
+    def strip_ends(s: str) -> str:
+        while s and (s[0] in quote_like or s[0] in invisible):
+            s = s[1:]
+        while s and (s[-1] in quote_like or s[-1] in invisible):
+            s = s[:-1]
+        return s
+
+    fc2 = strip_ends(fc).strip()
+    return fc2
 
 
 def generate_ass_subtitles(
@@ -989,6 +1016,13 @@ def compile_render(
 
         fc = ";".join(filters) if filters else "null"
         fc = _sanitize_fc(fc)
+        # Forensic logging: show the exact last chars and codepoints
+        tail = fc[-12:]
+        logger.info("filter_complex tail_repr=%r tail_codepoints=%s", tail, [ord(c) for c in tail])
+
+        # Hard fail if we still have ghost quoting — do NOT silently fall back
+        if fc and fc[-1] in {"'", '"', "’", "‘", "“", "”", "\u200b", "\u200c", "\u200d", "\ufeff"}:
+            raise RuntimeError(f"filter_complex ends with illegal char: tail={tail!r} codepoints={[ord(c) for c in tail]}")
         logger.info(f"filter_complex len={len(fc)} head={fc[:200]} tail={fc[-200:]}")
 
         cmd = ["ffmpeg", "-y"] + inputs + [
