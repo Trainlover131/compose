@@ -13,11 +13,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Install Python dependencies first (layer caching)
+# --extra-index-url in requirements.txt pulls CPU-only torch wheels
 COPY apps/api/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Fail fast during build if faster-whisper can't import (prevents silent fallback at runtime)
+# Fail fast during build if key deps can't import
 RUN python -c "from faster_whisper import WhisperModel; print('faster-whisper import OK')"
+RUN python -c "import open_clip; print('open_clip import OK')"
 
 # Copy application code + assets
 COPY apps/ /app/apps/

@@ -7,7 +7,10 @@ from pathlib import Path
 
 import httpx
 
-from apps.api.config import PEXELS_API_KEY, LOCAL_STORAGE_PATH, is_pexels_available
+from apps.api.config import (
+    PEXELS_API_KEY, LOCAL_STORAGE_PATH, is_pexels_available,
+    CLIP_ENABLED, CLIP_CANDIDATES_PER_VARIANT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,10 +105,68 @@ def download_video(url: str, target_duration: float = 10.0) -> str | None:
         logger.error(f"B-roll download failed: {e}")
         return None
 
+def _clip_ranked_broll_search(query: str) -> list[dict]:
+    """Search Pexels videos across query variants and rank with CLIP.
+
+    Returns ranked candidates (media_ranker format) or empty list on failure.
+    """
+    try:
+        from apps.api.services.media_ranker.query_variants import variants
+        from apps.api.services.media_ranker.pexels_client import (
+            search_videos as mr_search_videos,
+        )
+        from apps.api.services.media_ranker.clip_ranker import rank_video_candidates
+
+        qvars = variants(query)
+        seen_ids: set[int] = set()
+        pool: list[dict] = []
+
+        for v in qvars:
+            results = mr_search_videos(v, per_page=CLIP_CANDIDATES_PER_VARIANT)
+            for c in results:
+                cid = c.get("id")
+                if cid not in seen_ids:
+                    seen_ids.add(cid)
+                    c["_variant"] = v
+                    pool.append(c)
+
+        logger.info(
+            "B-roll CLIP search: query=%s variants=%d pool=%d",
+            query[:60], len(qvars), len(pool),
+        )
+
+        if not pool:
+            return []
+
+        ranked = rank_video_candidates(pool, query=query, k=1)
+
+        if ranked:
+            top = ranked[0]
+            logger.info(
+                "B-roll CLIP top1: id=%s pos=%.4f neg=%.4f clip=%.4f "
+                "heur=%.4f final=%.4f",
+                top.get("id"),
+                top.get("pos_score", 0), top.get("neg_score", 0),
+                top.get("clip_score", 0), top.get("heuristic_score", 0),
+                top.get("final_score", 0),
+            )
+
+        return ranked
+
+    except Exception as exc:
+        logger.warning("CLIP b-roll ranking failed (non-fatal): %s", exc)
+        return []
+
+
 def fetch_broll_for_plan(broll_inserts: list[dict]) -> list[dict]:
     """Fetch b-roll clips for all inserts in the edit plan.
 
+    When CLIP_ENABLED, uses query variants + OpenCLIP ranking to select
+    the best Pexels video. Falls back to the original first-result approach
+    if CLIP fails.
+
     Returns updated inserts with asset_path filled in.
+    IMPORTANT: Never modifies insert timing (start/end).
     """
     if not is_pexels_available():
         logger.warning("Pexels not available, skipping b-roll fetch")
@@ -118,16 +179,44 @@ def fetch_broll_for_plan(broll_inserts: list[dict]) -> list[dict]:
         if duration <= 0:
             duration = 3.0
 
-        results = search_videos(query, per_page=3, orientation="portrait")
-        if results:
-            # Pick the first result
-            video = results[0]
-            local_path = download_video(video["url"], target_duration=duration)
+        video_url = None
+        attribution_photographer = "Unknown"
+        attribution_page = ""
+        asset_meta = None
+
+        # Try CLIP-ranked search first
+        if CLIP_ENABLED and query:
+            ranked = _clip_ranked_broll_search(query)
+            if ranked:
+                top = ranked[0]
+                # The media_ranker candidate uses "preview_url" for the video mp4
+                video_url = top.get("preview_url")
+                attribution_photographer = top.get("photographer", "Unknown")
+                attribution_page = top.get("page_url", "")
+                asset_meta = {
+                    "id": top.get("id"),
+                    "url": top.get("page_url", ""),
+                }
+
+        # Fallback: original simple search
+        if not video_url:
+            results = search_videos(query, per_page=3, orientation="portrait")
+            if results:
+                video = results[0]
+                video_url = video["url"]
+                attribution_photographer = video["photographer"]
+                attribution_page = video["pexels_url"]
+
+        if video_url:
+            local_path = download_video(video_url, target_duration=duration)
             if local_path:
                 insert["asset_path"] = local_path
                 insert["attribution"] = (
-                    f"Video by {video['photographer']} from Pexels: {video['pexels_url']}"
+                    f"Video by {attribution_photographer} from Pexels: "
+                    f"{attribution_page}"
                 )
+                if asset_meta:
+                    insert["asset_meta"] = asset_meta
 
         updated.append(insert)
 
