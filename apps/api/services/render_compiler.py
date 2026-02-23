@@ -80,7 +80,7 @@ BROLL_DEFAULT_FILM_FF_FILTER = (
     "rm=-0.010:gm=0.000:bm=0.012:"
     "rh=0.085:gh=0.020:bh=-0.085,"
     # keep the highlight cap (prevents blowout)
-    "curves=master='0/0 0.75/0.76 0.90/0.88 1/0.95',"
+    "curves=master=0/0\\ 0.75/0.76\\ 0.90/0.88\\ 1/0.95,"
     # texture: slightly stronger
     "noise=c0s=6:c0f=t+u,"
     "drawgrid=w=0:h=3:t=1:c=black@0.055,"
@@ -562,7 +562,7 @@ def build_broll_filtergraph_entries(
         # Stage 3: composite [b{i}_look] (NOT [b{i}_raw]) onto running chain
         filters.append(
             f"{last_label}[{look_label}]overlay="
-            f"enable='between(t,{bc['start']:.3f},{bc['end']:.3f})'[{out_label}]"
+            f"enable=between(t\\,{bc['start']:.3f}\\,{bc['end']:.3f})[{out_label}]"
         )
         last_label = f"[{out_label}]"
 
@@ -960,7 +960,7 @@ def compile_render(
             filters.append(
                 f"{last_label}[{prep}]overlay="
                 f"x={x_expr}:y={y_expr}:"
-                f"enable='between(t,{oi['start']:.3f},{oi['end']:.3f})'[{out}]"
+                f"enable=between(t\\,{oi['start']:.3f}\\,{oi['end']:.3f})[{out}]"
             )
             last_label = f"[{out}]"
 
