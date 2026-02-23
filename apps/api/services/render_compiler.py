@@ -376,7 +376,7 @@ def compile_motion_for_broll(bc: dict, motion_enabled: bool) -> str:
         # e(t) from 0 -> 0.02 across clip.
         e = f"(0.020*{u})"
         tail = (
-            f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x=(iw-w)/2:y=(ih-h)/2"
+            f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x=(iw-w)/2:y=(ih-h)/2:eval=frame"
             f",scale=1080:1920"
         )
         _validate_motion_fragment(tail, "broll.micro_push")
@@ -398,7 +398,7 @@ def compile_motion_for_broll(bc: dict, motion_enabled: bool) -> str:
             x = f"(iw-w)/2"
             y = f"(ih-h)/2+({sign}{pan})"
         tail = (
-            f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x={x}:y={y}"
+            f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x={x}:y={y}:eval=frame"
             f",scale=1080:1920"
         )
         _validate_motion_fragment(tail, "broll.slide")
