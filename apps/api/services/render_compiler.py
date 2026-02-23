@@ -376,7 +376,7 @@ def compile_motion_for_broll(bc: dict, motion_enabled: bool) -> str:
         # e(t) from 0 -> 0.02 across clip.
         e = f"(0.020*{u})"
         tail = (
-            f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x=(iw-w)/2:y=(ih-h)/2:eval=frame"
+            f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x=(iw-w)/2:y=(ih-h)/2"
             f",scale=1080:1920"
         )
         _validate_motion_fragment(tail, "broll.micro_push")
@@ -398,7 +398,7 @@ def compile_motion_for_broll(bc: dict, motion_enabled: bool) -> str:
             x = f"(iw-w)/2"
             y = f"(ih-h)/2+({sign}{pan})"
         tail = (
-            f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x={x}:y={y}:eval=frame"
+            f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x={x}:y={y}"
             f",scale=1080:1920"
         )
         _validate_motion_fragment(tail, "broll.slide")
@@ -1065,13 +1065,13 @@ def compile_render(
         logger.info("filter_complex tail_codepoints=%s", [ord(c) for c in fc[-40:]])
         logger.info("filter_complex len=%d head=%r tail=%r", len(fc), fc[:200], fc[-200:])
 
-        # Write filtergraph to a script file to avoid argv parsing / invisible-char issues
+        # Write filtergraph for debugging / forensics, then pass via -filter_complex (no script option)
         fc_path = work / "filter_complex.txt"
         fc_path.write_text(fc, encoding="utf-8", errors="strict")
 
         cmd = ["ffmpeg", "-y"] + inputs + [
             "-filter_complex_threads", "1",
-            "-filter_complex_script", str(fc_path),
+            "-filter_complex", fc,
             "-map", map_v, "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
             "-threads", "2",
@@ -1203,13 +1203,13 @@ def compile_render(
             logger.info("filter_complex_retry last300=%r", fc_retry[-300:])
             logger.info("filter_complex_retry tail_codepoints=%s", [ord(c) for c in fc_retry[-40:]])
 
-            # Write retry filtergraph to script file to avoid argv parsing issues
+            # Write retry filtergraph for debugging / forensics, then pass via -filter_complex
             fc_retry_path = work / "filter_complex_retry.txt"
             fc_retry_path.write_text(fc_retry, encoding="utf-8", errors="strict")
 
             cmd_retry = ["ffmpeg", "-y"] + inputs + [
                 "-filter_complex_threads", "1",
-                "-filter_complex_script", str(fc_retry_path),
+                "-filter_complex", fc_retry,
                 "-map", map_v_retry, "-map", "0:a?",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-threads", "2",
