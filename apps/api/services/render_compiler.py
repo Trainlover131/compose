@@ -579,6 +579,26 @@ def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subproces
         )
     return result
 
+def _sanitize_fc(fc: str) -> str:
+    """Sanitize a filter_complex string before passing to FFmpeg.
+
+    Strips leading/trailing whitespace, removes accidental wrapping quotes,
+    and removes a trailing unmatched single quote.  Does NOT modify internal
+    filter expressions (commas, backslashes, etc.).
+    """
+    fc = fc.strip()
+    # Remove balanced wrapping quotes (accidental shell-style quoting)
+    if (fc.startswith("'") and fc.endswith("'")) or (fc.startswith('"') and fc.endswith('"')):
+        fc = fc[1:-1]
+    # Remove trailing unmatched single quote
+    if fc.endswith("'") and not fc.startswith("'"):
+        fc = fc[:-1]
+    # Remove trailing unmatched double quote
+    if fc.endswith('"') and not fc.startswith('"'):
+        fc = fc[:-1]
+    return fc
+
+
 def generate_ass_subtitles(
     transcript: dict,
     edit_plan: EditPlan,
@@ -968,6 +988,7 @@ def compile_render(
         map_v = last_label if str(last_label).startswith("[") else f"[{last_label}]"
 
         fc = ";".join(filters) if filters else "null"
+        fc = _sanitize_fc(fc)
         logger.info(f"filter_complex len={len(fc)} head={fc[:200]} tail={fc[-200:]}")
 
         cmd = ["ffmpeg", "-y"] + inputs + [
@@ -988,6 +1009,10 @@ def compile_render(
             _run_ffmpeg(cmd, "layer-broll-overlays-captions", timeout=MAX_RENDER_TIMEOUT_SEC)
             current_video = str(layered_path)
         except RuntimeError as e:
+            logger.error(
+                "MOTION PASS FAILED (path=motion) — fc len=%d tail_repr=%s",
+                len(fc), repr(fc[-600:]),
+            )
             logger.error("MOTION PASS FAILED — output will have NO MOTION unless fixed. Error: %s", e)
             logger.warning("Retrying layer pass with ALL motion disabled (keeping b-roll + overlays + same enable windows).")
 
@@ -995,7 +1020,10 @@ def compile_render(
             # - b-roll: no motion (compile_motion_for_broll returns "")
             # - overlays: no prep_tail, fixed x/y
             filters_retry = []
-            last_label_retry = "[0:v]"
+
+            # ✅ IMPORTANT: normalize base video timeline (same as motion path)
+            filters_retry.append("[0:v]setpts=PTS-STARTPTS[base]")
+            last_label_retry = "[base]"
             input_index_retry = 1
 
             # ---- B-ROLL FULLSCREEN CUTAWAYS (NO MOTION) ----
@@ -1081,9 +1109,12 @@ def compile_render(
 
             map_v_retry = last_label_retry if str(last_label_retry).startswith("[") else f"[{last_label_retry}]"
 
+            fc_retry = ";".join(filters_retry) if filters_retry else "null"
+            fc_retry = _sanitize_fc(fc_retry)
+
             cmd_retry = ["ffmpeg", "-y"] + inputs + [
                 "-filter_complex_threads", "1",
-                "-filter_complex", ";".join(filters_retry) if filters_retry else "null",
+                "-filter_complex", fc_retry,
                 "-map", map_v_retry, "-map", "0:a?",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                 "-threads", "2",
@@ -1096,6 +1127,11 @@ def compile_render(
                 _run_ffmpeg(cmd_retry, "layer-broll-overlays-captions-retry-no-motion", timeout=MAX_RENDER_TIMEOUT_SEC)
                 current_video = str(layered_path)
             except RuntimeError as e_retry:
+                logger.error(
+                    "RETRY-NO-MOTION PASS FAILED (path=retry-no-motion) — "
+                    "fc_retry len=%d tail_repr=%s",
+                    len(fc_retry), repr(fc_retry[-600:]),
+                )
                 logger.warning(f"No-motion retry layer pass failed (non-fatal): {e_retry}")
 
                 # LAST resort: captions-only
