@@ -747,7 +747,7 @@ def generate_ass_subtitles(
 
     # --- style presets ---------------------------------------------------
     style_presets = {
-        "snappy": {"fontname": "Inter", "fontsize": 58, "outline": 3, "shadow": 2, "bold": 1, "margin_v": 180, "spacing": 0},
+        "snappy": {"fontname": _pick_helvetica_font(), "fontsize": 58, "outline": 0, "shadow": 0, "bold": 1, "margin_v": 346, "spacing": -2},
         "cinematic": {"fontname": "Inter", "fontsize": 48, "outline": 2, "shadow": 3, "bold": 0, "margin_v": 180, "spacing": 0},
         "podcast": {"fontname": "Inter", "fontsize": 52, "outline": 2, "shadow": 1, "bold": 0, "margin_v": 180, "spacing": 0},
         "luxury": {"fontname": "Inter", "fontsize": 44, "outline": 1, "shadow": 2, "bold": 0, "margin_v": 180, "spacing": 0},
