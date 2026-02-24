@@ -222,5 +222,19 @@ class TestHelveticaPunchASS(unittest.TestCase):
             os.unlink(path)
 
 
+class TestDefaultPresetUsesHelveticaPunch(unittest.TestCase):
+    """Verify the default preset (snappy-creator) ships with helvetica_punch."""
+
+    def test_default_preset_caption_style(self):
+        from apps.api.models.presets import get_preset
+
+        preset = get_preset("snappy-creator")
+        self.assertIsNotNone(preset)
+        cap = preset["config"]["caption_style"]
+        self.assertEqual(cap["style_id"], "helvetica_punch")
+        self.assertEqual(cap["max_words_per_line"], 3)
+        self.assertEqual(cap["max_lines"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
