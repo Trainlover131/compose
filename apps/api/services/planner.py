@@ -26,6 +26,7 @@ from apps.api.config import (
     NANOBANANA_API_KEY, LOCAL_STORAGE_PATH,
     PEXELS_API_KEY, OVERLAY_SOURCE_PRIMARY, OVERLAY_SOURCE_FALLBACK_AI,
     CLIP_ENABLED, CLIP_CANDIDATES_PER_VARIANT,
+    LOGO_DEV_SECRET_KEY, LOGO_DEV_PUBLISHABLE_KEY,
 )
 from apps.api.models.presets import get_preset
 from apps.api.models.schemas import EditPlan
@@ -1386,10 +1387,50 @@ def _try_pexels_overlay(item) -> Optional[str]:
         return None
 
 
+_LOGO_PROFILES = frozenset({"logo_badge", "brand_logo", "organization_logo"})
+
+
+def _is_logo_overlay(item) -> bool:
+    """Return True if the overlay should be sourced from Logo.dev."""
+    ri = item.render_intent
+    profile = ri.profile if hasattr(ri, "profile") else (ri or {}).get("profile", "")
+    return profile in _LOGO_PROFILES
+
+
+def _try_logo_dev_overlay(item) -> Optional[str]:
+    """Try to fetch a Logo.dev logo for the overlay item.
+
+    Returns local file path on success, None on failure.
+    Only modifies item.asset_path — never touches placement, timing,
+    or animation.
+    """
+    if not LOGO_DEV_PUBLISHABLE_KEY:
+        return None
+
+    try:
+        from apps.api.integrations.logo_dev import fetch_logo_to_cache
+
+        brand_name = item.query
+        if not brand_name:
+            return None
+
+        result = fetch_logo_to_cache(brand_name, _OVERLAY_CACHE_DIR)
+        if result and result.exists():
+            return str(result)
+        return None
+    except Exception as exc:
+        logger.warning("Logo.dev overlay attempt failed (non-fatal): %s", exc)
+        return None
+
+
 def _generate_overlay_assets(plan: EditPlan) -> None:
     """Best-effort: generate overlay images.
 
     Strategy per item (when source=="ai" and query exists):
+      0) If overlay profile is a logo type (logo_badge/brand_logo/
+         organization_logo) AND Logo.dev keys are set: try Logo.dev first.
+         If Logo.dev fails, fall through to existing Pexels/NanoBanana
+         pipeline as a fail-safe.
       1) If OVERLAY_SOURCE_PRIMARY=="pexels" and PEXELS_API_KEY set:
          try Pexels photo search + CLIP ranking.
       2) If Pexels fails or below threshold, fall back to NanoBanana
@@ -1411,8 +1452,19 @@ def _generate_overlay_assets(plan: EditPlan) -> None:
 
         chosen_source = None
 
-        # Step A: Try Pexels first
-        if use_pexels:
+        # Step 0: Logo.dev for logo-type overlays
+        if _is_logo_overlay(item) and LOGO_DEV_PUBLISHABLE_KEY:
+            logo_path = _try_logo_dev_overlay(item)
+            if logo_path:
+                item.asset_path = logo_path
+                item.source = "logo_dev"
+                chosen_source = "logo_dev"
+                logger.info(
+                    "Overlay source=logo_dev for query=%s", item.query[:80],
+                )
+
+        # Step A: Try Pexels first (skip for logo overlays already resolved)
+        if not chosen_source and use_pexels:
             pexels_path = _try_pexels_overlay(item)
             if pexels_path:
                 item.asset_path = pexels_path
