@@ -663,75 +663,6 @@ def _sanitize_fc(fc: str) -> str:
     return fc
 
 
-def _chunk_words_micro(
-    words: list[dict],
-    max_words: int = 3,
-    pause_threshold: float = 0.35,
-    end_pad: float = 0.06,
-) -> list[dict]:
-    """Group words into micro-chunks of 1–*max_words* words.
-
-    Pause-aware: starts a new chunk when the gap between consecutive
-    words exceeds *pause_threshold* seconds.
-
-    Returns [{start, end, text}, ...] where end is optionally padded
-    by *end_pad* seconds (40-80ms) to avoid flicker.
-    """
-    if not words:
-        return []
-
-    chunks: list[dict] = []
-    buf: list[dict] = []
-
-    for w in words:
-        # Start a new chunk if pause between previous word and this one
-        if buf:
-            gap = w["start"] - buf[-1]["end"]
-            if gap > pause_threshold or len(buf) >= max_words:
-                chunks.append({
-                    "start": buf[0]["start"],
-                    "end": buf[-1]["end"] + end_pad,
-                    "text": " ".join(b["word"] for b in buf),
-                })
-                buf = []
-        buf.append(w)
-
-    if buf:
-        chunks.append({
-            "start": buf[0]["start"],
-            "end": buf[-1]["end"] + end_pad,
-            "text": " ".join(b["word"] for b in buf),
-        })
-
-    return chunks
-
-
-# Font fallback order for helvetica_punch style (Helvetica-like, Debian-safe)
-_HELVETICA_FONT_FALLBACK = ("Liberation Sans", "Nimbus Sans", "DejaVu Sans")
-
-
-def _pick_helvetica_font() -> str:
-    """Return the first available Helvetica-like font name on this system."""
-    import shutil
-
-    if shutil.which("fc-list"):
-        import subprocess
-        try:
-            out = subprocess.check_output(
-                ["fc-list", "--format", "%{family}\n"],
-                timeout=5, text=True,
-            )
-            families = {f.strip() for f in out.splitlines()}
-            for candidate in _HELVETICA_FONT_FALLBACK:
-                if candidate in families:
-                    return candidate
-        except Exception:
-            pass
-
-    # Static fallback — Liberation Sans ships with most Debian/Ubuntu images
-    return _HELVETICA_FONT_FALLBACK[0]
-
-
 def generate_ass_subtitles(
     transcript: dict,
     edit_plan: EditPlan,
@@ -745,23 +676,14 @@ def generate_ass_subtitles(
     # Map original timestamps to final timeline timestamps
     timeline_map = _build_timeline_map(edit_plan)
 
-    # --- style presets ---------------------------------------------------
+    # Get style params
     style_presets = {
-        "snappy": {"fontname": "Inter", "fontsize": 58, "outline": 3, "shadow": 2, "bold": 1, "margin_v": 180, "spacing": 0},
-        "cinematic": {"fontname": "Inter", "fontsize": 48, "outline": 2, "shadow": 3, "bold": 0, "margin_v": 180, "spacing": 0},
-        "podcast": {"fontname": "Inter", "fontsize": 52, "outline": 2, "shadow": 1, "bold": 0, "margin_v": 180, "spacing": 0},
-        "luxury": {"fontname": "Inter", "fontsize": 44, "outline": 1, "shadow": 2, "bold": 0, "margin_v": 180, "spacing": 0},
-        "study": {"fontname": "Inter", "fontsize": 50, "outline": 2, "shadow": 1, "bold": 0, "margin_v": 180, "spacing": 0},
-        "default": {"fontname": "Inter", "fontsize": 52, "outline": 2, "shadow": 2, "bold": 0, "margin_v": 180, "spacing": 0},
-        "helvetica_punch": {
-            "fontname": _pick_helvetica_font(),
-            "fontsize": 64,
-            "outline": 3,
-            "shadow": 1,
-            "bold": 1,
-            "margin_v": 346,   # ~18% of 1920 → lower-middle center
-            "spacing": 1,
-        },
+        "snappy": {"fontsize": 58, "outline": 3, "shadow": 2, "bold": 1},
+        "cinematic": {"fontsize": 48, "outline": 2, "shadow": 3, "bold": 0},
+        "podcast": {"fontsize": 52, "outline": 2, "shadow": 1, "bold": 0},
+        "luxury": {"fontsize": 44, "outline": 1, "shadow": 2, "bold": 0},
+        "study": {"fontsize": 50, "outline": 2, "shadow": 1, "bold": 0},
+        "default": {"fontsize": 52, "outline": 2, "shadow": 2, "bold": 0},
     }
     style = style_presets.get(caption_cfg.style_id, style_presets["default"])
 
@@ -774,13 +696,13 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{style['fontname']},{style['fontsize']},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,{style['bold']},0,0,0,100,100,{style['spacing']},0,1,{style['outline']},{style['shadow']},2,40,40,{style['margin_v']},1
+Style: Default,Inter,{style['fontsize']},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,{style['bold']},0,0,0,100,100,0,0,1,{style['outline']},{style['shadow']},2,40,40,180,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
-    # Collect all word-level timestamps
+    # Group words into caption chunks
     all_words = []
     for seg in transcript.get("segments", []):
         for word in seg.get("words", []):
@@ -799,25 +721,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         Path(output_path).write_text(ass_content)
         return output_path
 
-    # --- micro-chunk path for helvetica_punch ----------------------------
-    is_punch = caption_cfg.style_id == "helvetica_punch"
-
-    if is_punch:
-        micro = _chunk_words_micro(all_words, max_words=3)
-        for ch in micro:
-            mapped_start = _map_time(ch["start"], timeline_map)
-            mapped_end = _map_time(ch["end"], timeline_map)
-            if mapped_start is None or mapped_end is None:
-                continue
-            start_str = _format_ass_time(mapped_start)
-            end_str = _format_ass_time(mapped_end)
-            ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{ch['text']}\n"
-
-        Path(output_path).write_text(ass_content)
-        logger.info("ASS subtitles generated (helvetica_punch): %d micro-chunks -> %s", len(micro), output_path)
-        return output_path
-
-    # --- standard chunking path (unchanged) ------------------------------
+    # Chunk words into groups
     max_words = caption_cfg.max_words_per_line * caption_cfg.max_lines
     chunks = []
     current_chunk = []
