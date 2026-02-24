@@ -30,6 +30,9 @@ class TestChunkWordsMicro(unittest.TestCase):
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0]["text"], "Hello beautiful world")
         self.assertAlmostEqual(chunks[0]["start"], 0.0)
+        # Verify raw words are preserved for karaoke timing
+        self.assertEqual(len(chunks[0]["words"]), 3)
+        self.assertEqual(chunks[0]["words"][0]["word"], "Hello")
 
     def test_four_words_splits_at_three(self):
         words = self._words([
@@ -165,11 +168,12 @@ class TestHelveticaPunchASS(unittest.TestCase):
             self.assertGreaterEqual(len(dialogues), 2)
             self.assertLessEqual(len(dialogues), 4)
 
-            # Each dialogue should have at most 3 words
+            # Every Dialogue must have karaoke tags and alignment override
             for d in dialogues:
                 text = d.split(",,", 1)[-1]
-                word_count = len(text.strip().split())
-                self.assertLessEqual(word_count, 3, f"Too many words: {text!r}")
+                self.assertIn("{\\an2}", text)
+                self.assertIn("{\\k", text)
+                self.assertNotIn("\\pos", text)
         finally:
             os.unlink(path)
 
@@ -195,10 +199,22 @@ class TestHelveticaPunchASS(unittest.TestCase):
                 content = f.read()
             dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
             self.assertEqual(len(dialogues), 1)
-            # "Hello world" in one chunk (2 words < 3 max)
-            self.assertIn("Hello world", dialogues[0])
+            d = dialogues[0]
+            text = d.split(",,", 1)[-1]
+            # Karaoke tags present for each word
+            self.assertIn("{\\an2}", text)
+            self.assertIn("{\\k", text)
+            self.assertIn("Hello", text)
+            self.assertIn("world", text)
             # Start should be 0:00:00.50 (0.5s)
-            self.assertIn("0:00:00.50", dialogues[0])
+            self.assertIn("0:00:00.50", d)
+            # No \\pos overrides
+            self.assertNotIn("\\pos", text)
+            # Verify karaoke centisecond values:
+            # Hello: 0.5 -> 0.85 (next word start) = 0.35s = 35cs
+            # world: 0.85 -> 1.0 (chunk end) = 0.15s = 15cs
+            self.assertIn("{\\k35}", text)
+            self.assertIn("{\\k15}", text)
         finally:
             os.unlink(path)
 

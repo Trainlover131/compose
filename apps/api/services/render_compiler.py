@@ -674,7 +674,7 @@ def _chunk_words_micro(
     Pause-aware: starts a new chunk when the gap between consecutive
     words exceeds *pause_threshold* seconds.
 
-    Returns [{start, end, text}, ...] where end is optionally padded
+    Returns [{start, end, text, words}, ...] where end is optionally padded
     by *end_pad* seconds (40-80ms) to avoid flicker.
     """
     if not words:
@@ -692,6 +692,7 @@ def _chunk_words_micro(
                     "start": buf[0]["start"],
                     "end": buf[-1]["end"] + end_pad,
                     "text": " ".join(b["word"] for b in buf),
+                    "words": list(buf),
                 })
                 buf = []
         buf.append(w)
@@ -701,6 +702,7 @@ def _chunk_words_micro(
             "start": buf[0]["start"],
             "end": buf[-1]["end"] + end_pad,
             "text": " ".join(b["word"] for b in buf),
+            "words": list(buf),
         })
 
     return chunks
@@ -806,16 +808,34 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     if is_punch:
         micro = _chunk_words_micro(all_words, max_words=3)
         for ch in micro:
-            mapped_start = _map_time(ch["start"], timeline_map)
-            mapped_end = _map_time(ch["end"], timeline_map)
+            chunk_words = ch["words"]
+            chunk_start = chunk_words[0]["start"]
+            chunk_end = chunk_words[-1]["end"]
+            mapped_start = _map_time(chunk_start, timeline_map)
+            mapped_end = _map_time(chunk_end, timeline_map)
             if mapped_start is None or mapped_end is None:
                 continue
+            # Small safety pad (max 20ms)
+            mapped_end += 0.02
             start_str = _format_ass_time(mapped_start)
             end_str = _format_ass_time(mapped_end)
-            ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{ch['text']}\n"
+            # Build karaoke-tagged text with per-word timing
+            karaoke_parts = []
+            for i, w in enumerate(chunk_words):
+                cleaned = w["word"].strip()
+                start_i = w["start"]
+                if i + 1 < len(chunk_words):
+                    start_next = chunk_words[i + 1]["start"]
+                else:
+                    start_next = chunk_end
+                dur = max(0.01, min(5.0, start_next - start_i))
+                cs = max(1, int(round(dur * 100)))
+                karaoke_parts.append(f"{{\\k{cs}}}{cleaned}")
+            text = "{\\an2}" + " ".join(karaoke_parts)
+            ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}\n"
 
         Path(output_path).write_text(ass_content)
-        logger.info("ASS subtitles generated (helvetica_punch): %d micro-chunks -> %s", len(micro), output_path)
+        logger.info("ASS captions: style_id=%s font=%s chunks=%d", caption_cfg.style_id, style["fontname"], len(micro))
         return output_path
 
     # --- standard chunking path (unchanged) ------------------------------
