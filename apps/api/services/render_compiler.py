@@ -359,15 +359,8 @@ def compile_motion_for_broll(bc: dict, motion_enabled: bool) -> str:
     in_dur = max(0.06, min(0.25, in_dur))
     out_dur = max(0.06, min(0.25, out_dur))
 
-    # NOTE: On Railway (ffmpeg 7.1.3 debian build), crop expressions do NOT accept `t`,
-    # but they DO accept `n` (frame index). So we drive motion with normalized frame progress.
-    # Minimal assumption: render at 30fps for motion math.
-    fps = 30
-    n_frames = max(2, int(round(dur * fps)))
-    denom = max(1, n_frames - 1)
-
-    # u is 0..1 across the clip using frame index `n`
-    u = _clamp01_expr(f"(n/{denom})")
+    # t here is the main timeline time because b-roll PTS is offset with setpts to bc['start']/TB
+    u = f"((t-{start:.3f})/{dur:.6f})"
 
     if mtype == "fade":
         # Subtle triangle brightness ramp: 0 at edges, peak mid-clip.
@@ -380,10 +373,10 @@ def compile_motion_for_broll(bc: dict, motion_enabled: bool) -> str:
 
     if mtype == "micro_push":
         # Push-in via crop-with-zoom, then scale back (duration unchanged).
-        # e(n) from 0 -> 0.02 across clip using normalized frame progress u.
+        # e(t) from 0 -> 0.02 across clip.
         e = f"(0.020*{u})"
         tail = (
-            f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x=(iw-ow)/2:y=(ih-oh)/2"
+            f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x=(iw-w)/2:y=(ih-h)/2"
             f",scale=1080:1920"
         )
         _validate_motion_fragment(tail, "broll.micro_push")
@@ -398,12 +391,12 @@ def compile_motion_for_broll(bc: dict, motion_enabled: bool) -> str:
         pan = f"(14*(2*{u}-1))"  # -14..+14
         if dirn in ("left", "right"):
             sign = "-" if dirn == "left" else ""
-            x = f"(iw-ow)/2+({sign}{pan})"
-            y = f"(ih-oh)/2"
+            x = f"(iw-w)/2+({sign}{pan})"
+            y = f"(ih-h)/2"
         else:
             sign = "-" if dirn == "up" else ""
-            x = f"(iw-ow)/2"
-            y = f"(ih-oh)/2+({sign}{pan})"
+            x = f"(iw-w)/2"
+            y = f"(ih-h)/2+({sign}{pan})"
         tail = (
             f",crop=w=iw/(1+{e}):h=ih/(1+{e}):x={x}:y={y}"
             f",scale=1080:1920"
