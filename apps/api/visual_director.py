@@ -134,6 +134,17 @@ Do NOT place items at arbitrary round-number times. Use the word_timings above.
 - IMPORTANT: In the "reason" field, always include a verbatim anchor quote from the transcript. The start_orig and end_orig MUST wrap that quoted segment with 0.2–0.6s of padding on each side.
 - FIRST-MENTION RULE: If an overlay entity (e.g. a logo, product, person) is mentioned multiple times in the transcript, anchor the overlay to the FIRST mention only. Do not create duplicate overlays for later mentions of the same entity.
 
+=== BRAND / LOGO OVERLAY RULES ===
+When the speaker mentions a BRAND, COMPANY, ORGANIZATION, UNIVERSITY, or NEWS OUTLET by name, and you decide an overlay should show that entity's logo:
+  1. Set render_intent.profile = "logo_badge" (exactly this string).
+  2. Set image_prompt to the CANONICAL brand name ONLY — the formal full name as commonly known.
+     - Do NOT append "logo" to the query (bad: "Google logo", good: "Google").
+     - Do NOT invent abbreviations (bad: "MIT", good: "Massachusetts Institute of Technology" — unless "MIT" is the universally recognized name).
+     - For universities/schools, include "University" or the full formal name when it could be ambiguous.
+     - Prefer spaced words over acronyms when possible (good: "Y Combinator", bad: "YC").
+  3. Set render_intent.has_text = false, render_intent.requires_high_fidelity_text = false, render_intent.wants_transparency = true.
+  4. Do NOT set source, style_hint, or must_include — the logo is fetched automatically from Logo.dev.
+
 === GENERAL ===
 - Use ORIGINAL video timestamps (seconds).
 - Max {_MAX_OVERLAYS} overlays, max {_MAX_BROLL} b-roll inserts.

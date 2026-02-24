@@ -32,6 +32,10 @@ NANOBANANA_API_KEY = os.getenv("NANOBANANA_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
+# Logo.dev (brand/org logo overlays)
+LOGO_DEV_SECRET_KEY = os.getenv("LOGO_DEV_SECRET_KEY", "")
+LOGO_DEV_PUBLISHABLE_KEY = os.getenv("LOGO_DEV_PUBLISHABLE_KEY", "")
+
 # Asset selection: Pexels overlay + CLIP ranking
 OVERLAY_SOURCE_PRIMARY = os.getenv("OVERLAY_SOURCE_PRIMARY", "pexels")
 OVERLAY_SOURCE_FALLBACK_AI = os.getenv("OVERLAY_SOURCE_FALLBACK_AI", "true").lower() in ("true", "1", "yes")
