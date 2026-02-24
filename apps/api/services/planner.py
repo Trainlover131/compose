@@ -974,6 +974,12 @@ def _map_vd_overlays(
         if drop_reason:
             continue
 
+        pl = ov.get("placement", {})
+        logger.info(
+            "overlay[%d] placement x=%.3f y=%.3f w=%.3f",
+            idx, pl.get("x", 0), pl.get("y", 0), pl.get("w", 0),
+        )
+
         mapped.append({
             "type": "image_overlay",
             "start": round(fs, 3),
@@ -983,7 +989,7 @@ def _map_vd_overlays(
             "query": ov.get("image_prompt", ""),
             "source": "ai",
             "style_hint": "",
-            "placement": ov.get("placement", {}),
+            "placement": pl,
             "animation": ov.get("animation", {}),
             "notes": ov.get("reason", ""),
             "intent": ov.get("intent", ""),
