@@ -764,6 +764,7 @@ def generate_ass_subtitles(
         },
     }
     style = style_presets.get(caption_cfg.style_id, style_presets["default"])
+    logger.info("ASS captions: style_id=%s font=%s", caption_cfg.style_id, style["fontname"])
 
     ass_content = f"""[Script Info]
 Title: Compose Captions
