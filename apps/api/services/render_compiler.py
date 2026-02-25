@@ -762,7 +762,7 @@ def generate_ass_subtitles(
             "shadow": 1,
             "bold": 1,
             "margin_v": 346,   # ~18% of 1920 → lower-middle center
-            "spacing": 1,
+            "spacing": -1,
         },
     }
     style = style_presets.get(caption_cfg.style_id, style_presets["default"])
