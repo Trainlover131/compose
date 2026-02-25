@@ -1163,7 +1163,7 @@ def compile_render(
         # ---- CAPTIONS (ASS burn) ----
         if has_captions:
             cap_out = "vcap"
-            filters.append(f"{last_label}ass={ass_path}[{cap_out}]")
+            filters.append(f"{last_label}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]")
             last_label = f"[{cap_out}]"
 
         map_v = last_label if str(last_label).startswith("[") else f"[{last_label}]"
@@ -1296,10 +1296,13 @@ def compile_render(
                 )
                 last_label_retry = f"[{out}]"
 
+            # Save label before captions for potential no-caption fallback
+            last_label_before_captions = last_label_retry
+
             # ---- CAPTIONS (ASS burn) ----
             if has_captions:
                 cap_out = "vcap"
-                filters_retry.append(f"{last_label_retry}ass={ass_path}[{cap_out}]")
+                filters_retry.append(f"{last_label_retry}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]")
                 last_label_retry = f"[{cap_out}]"
 
             map_v_retry = last_label_retry if str(last_label_retry).startswith("[") else f"[{last_label_retry}]"
@@ -1346,15 +1349,71 @@ def compile_render(
                 )
                 logger.warning(f"No-motion retry layer pass failed (non-fatal): {e_retry}")
 
-                # LAST resort: captions-only
-                if has_captions:
+                # ---- NEW FALLBACK: b-roll + overlays WITHOUT captions ----
+                # The ASS caption filter may be causing the failure (e.g. font
+                # rendering issues).  Try the same filter graph but drop the
+                # ass= entry so b-roll and overlays can still render.
+                if has_captions and (broll_clips or overlay_items):
+                    logger.warning("Retrying with b-roll + overlays ONLY (no captions).")
+                    filters_nocap = filters_retry[:-1]  # drop the trailing ass= entry
+                    map_v_nocap = (
+                        last_label_before_captions
+                        if last_label_before_captions.startswith("[")
+                        else f"[{last_label_before_captions}]"
+                    )
+
+                    fc_nocap = ";".join(filters_nocap) if filters_nocap else "null"
+                    fc_nocap = _sanitize_fc(fc_nocap)
+
+                    layered_nocap_path = work / "layered_nocap.mp4"
+                    cmd_nocap = ["ffmpeg", "-y"] + inputs + [
+                        "-filter_complex_threads", "1",
+                        "-filter_complex", fc_nocap,
+                        "-map", map_v_nocap, "-map", "0:a?",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                        "-threads", "2",
+                        "-af", "aresample=async=1:first_pts=0",
+                        "-c:a", "aac", "-b:a", "160k",
+                        str(layered_nocap_path),
+                    ]
+
+                    try:
+                        _run_ffmpeg(cmd_nocap, "layer-broll-overlays-no-captions", timeout=MAX_RENDER_TIMEOUT_SEC)
+                        current_video = str(layered_nocap_path)
+                        logger.info("B-roll + overlays rendered successfully (without captions).")
+
+                        # Now try to burn captions separately on the layered result
+                        captioned_on_layered = work / "captioned_on_layered.mp4"
+                        try:
+                            _run_ffmpeg(
+                                [
+                                    "ffmpeg", "-y",
+                                    "-i", current_video,
+                                    "-vf", f"ass={ass_path}:fontsdir=/usr/share/fonts",
+                                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                                    "-threads", "2",
+                                    "-af", "aresample=async=1:first_pts=0",
+                                    "-c:a", "aac", "-b:a", "160k",
+                                    str(captioned_on_layered),
+                                ],
+                                "burn-captions-on-layered",
+                                timeout=MAX_RENDER_TIMEOUT_SEC,
+                            )
+                            current_video = str(captioned_on_layered)
+                        except RuntimeError as e_cap:
+                            logger.warning(f"Caption burn on layered video failed (non-fatal, keeping b-roll + overlays): {e_cap}")
+                    except RuntimeError as e_nocap:
+                        logger.warning(f"B-roll + overlays without captions also failed: {e_nocap}")
+
+                # LAST resort: captions-only (skip if b-roll+overlays already rendered above)
+                if has_captions and current_video == str(concat_path):
                     captioned_path = work / "captioned.mp4"
                     try:
                         _run_ffmpeg(
                             [
                                 "ffmpeg", "-y",
                                 "-i", current_video,
-                                "-vf", f"ass={ass_path}",
+                                "-vf", f"ass={ass_path}:fontsdir=/usr/share/fonts",
                                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
                                 "-threads", "2",
                                 "-af", "aresample=async=1:first_pts=0",
