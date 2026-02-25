@@ -4,6 +4,7 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libass-dev \
+    fonts-liberation \
     frei0r-plugins \
     && rm -rf /var/lib/apt/lists/*
 
