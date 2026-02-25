@@ -758,11 +758,11 @@ def generate_ass_subtitles(
         "helvetica_punch": {
             "fontname": _pick_helvetica_font(),
             "fontsize": 64,
-            "outline": 3,
-            "shadow": 1,
+            "outline": 0,
+            "shadow": 0,
             "bold": 1,
-            "margin_v": 346,   # ~18% of 1920 → lower-middle center
-            "spacing": 1,
+            "margin_v": 500,   # ~18% of 1920 → lower-middle center
+            "spacing": -1,
         },
     }
     style = style_presets.get(caption_cfg.style_id, style_presets["default"])
