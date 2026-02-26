@@ -122,11 +122,45 @@ class OverlayConfig(BaseModel):
     items: list[OverlayItem] = []
 
 
+class CaptionKaraokeStyle(BaseModel):
+    enabled: Optional[bool] = None
+    color: Optional[str] = None  # "#RRGGBB"
+
+
+class CaptionPauseEmphasis(BaseModel):
+    enabled: Optional[bool] = None
+    threshold_sec: Optional[float] = None  # e.g. 0.35
+
+
+class CaptionStyle(BaseModel):
+    """Optional user-driven caption style overrides.
+
+    All fields are optional; when absent the renderer uses the style_id
+    preset defaults.  The planner populates only the fields the user
+    explicitly requested.
+    """
+    font_primary: Optional[str] = None       # e.g. "Helvetica", "Inter"
+    font_emphasis: Optional[str] = None      # e.g. "Playfair Display Italic"
+    size: Optional[int] = None               # px
+    bold: Optional[bool] = None
+    italic: Optional[bool] = None
+    color: Optional[str] = None              # "#RRGGBB"
+    outline_color: Optional[str] = None      # "#RRGGBB"
+    outline_width: Optional[int] = None      # 0..10
+    shadow_depth: Optional[int] = None       # 0..10
+    tracking: Optional[int] = None           # letter spacing, -6..6
+    y: Optional[int] = None                  # absolute pixel y, e.g. 900..1700
+    align: Optional[int] = None              # ASS alignment (1-9), default 5
+    karaoke: Optional[CaptionKaraokeStyle] = None
+    pause_emphasis: Optional[CaptionPauseEmphasis] = None
+
+
 class CaptionConfig(BaseModel):
     enabled: bool = True
     style_id: str = "default"
     max_words_per_line: int = 5
     max_lines: int = 2
+    style: Optional[CaptionStyle] = None
 
 
 class MusicConfig(BaseModel):
@@ -186,6 +220,7 @@ class CaptionPatch(BaseModel):
     max_words_per_line: Optional[int] = None
     max_lines: Optional[int] = None
     enabled: Optional[bool] = None
+    style: Optional[CaptionStyle] = None
 
 
 class MusicPatch(BaseModel):

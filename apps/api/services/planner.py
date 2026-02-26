@@ -72,6 +72,11 @@ PLANNER_SYSTEM_PROMPT = (
     "6. Choose a music track_id from the available tracks that matches the "
     "preset mood.\n"
     "7. Caption style should match the preset configuration.\n"
+    "   If the user specifies any caption styling (font, color, size, "
+    "position, outline, shadow, italic, bold, karaoke, etc.), populate "
+    "captions.style with ONLY the fields they specified. Leave all other "
+    "style fields as null so the renderer defaults apply. Do NOT emit "
+    "raw ASS tags — only structured style fields.\n"
     "8. The rationale should briefly explain the editing strategy.\n"
     "9. Set broll.enabled=false and broll.inserts=[] (b-roll is handled "
     "separately).\n"
@@ -129,7 +134,23 @@ EDIT_PLAN_SCHEMA = """{
     "enabled": <bool>,
     "style_id": "<string>",
     "max_words_per_line": <int>,
-    "max_lines": <int>
+    "max_lines": <int>,
+    "style": {
+      "font_primary": "<string or null>",
+      "font_emphasis": "<string or null>",
+      "size": "<int or null>",
+      "bold": "<bool or null>",
+      "italic": "<bool or null>",
+      "color": "<#RRGGBB or null>",
+      "outline_color": "<#RRGGBB or null>",
+      "outline_width": "<int 0-10 or null>",
+      "shadow_depth": "<int 0-10 or null>",
+      "tracking": "<int -6..6 or null>",
+      "y": "<int 900-1700 or null>",
+      "align": "<int 1-9 or null>",
+      "karaoke": { "enabled": "<bool or null>", "color": "<#RRGGBB or null>" },
+      "pause_emphasis": { "enabled": "<bool or null>", "threshold_sec": "<float or null>" }
+    }
   },
   "music": {
     "enabled": <bool>,
