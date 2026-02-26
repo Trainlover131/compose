@@ -160,20 +160,25 @@ class TestHelveticaPunchASS(unittest.TestCase):
             # Should contain Liberation Sans (or fallback font)
             self.assertIn("Liberation Sans", content)
 
-            # Should have MarginV=346 (lower-middle center)
-            self.assertIn(",346,", content)
+            # MarginV in style is 500 for helvetica_punch
+            self.assertIn(",500,", content)
 
-            # Count Dialogue lines — 7 words / 3-word chunks = ~3 chunks
+            # SecondaryColour should be white (no karaoke red)
+            self.assertIn("&H00FFFFFF,&H00FFFFFF,", content)
+
+            # Count Dialogue lines — 7 words with weighted random 1-3 word chunks
             dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
             self.assertGreaterEqual(len(dialogues), 2)
-            self.assertLessEqual(len(dialogues), 4)
+            self.assertLessEqual(len(dialogues), 7)
 
-            # Every Dialogue must have karaoke tags and alignment override
+            # Every Dialogue must have fixed \pos and \an5 — no karaoke tags
             for d in dialogues:
                 text = d.split(",,", 1)[-1]
-                self.assertIn("{\\an2}", text)
-                self.assertIn("{\\k", text)
-                self.assertNotIn("\\pos", text)
+                self.assertIn("{\\an5\\pos(540,1180)}", text)
+                self.assertNotIn("{\\k", text)
+                self.assertNotIn("{\\an2}", text)
+                # No line breaks
+                self.assertNotIn("\\N", text)
         finally:
             os.unlink(path)
 
@@ -198,29 +203,48 @@ class TestHelveticaPunchASS(unittest.TestCase):
             with open(path) as f:
                 content = f.read()
             dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
-            self.assertEqual(len(dialogues), 1)
+            # With weighted random chunks (1-3 words), 2 words may be 1 or 2 chunks
+            self.assertGreaterEqual(len(dialogues), 1)
+            self.assertLessEqual(len(dialogues), 2)
             d = dialogues[0]
             text = d.split(",,", 1)[-1]
-            # Karaoke tags present for each word
-            self.assertIn("{\\an2}", text)
-            self.assertIn("{\\k", text)
+            # Fixed pos, no karaoke
+            self.assertIn("{\\an5\\pos(540,1180)}", text)
+            self.assertNotIn("{\\k", text)
             self.assertIn("Hello", text)
-            self.assertIn("world", text)
             # Start should be 0:00:00.50 (0.5s)
             self.assertIn("0:00:00.50", d)
-            # No \\pos overrides
-            self.assertNotIn("\\pos", text)
-            # Verify karaoke centisecond values:
-            # Hello: 0.5 -> 0.85 (next word start) = 0.35s = 35cs
-            # world: 0.85 -> 1.0 (chunk end) = 0.15s = 15cs
-            self.assertIn("{\\k35}", text)
-            self.assertIn("{\\k15}", text)
         finally:
             os.unlink(path)
 
-    def test_standard_style_unchanged(self):
-        """Verify non-punch styles still use the standard chunking path."""
+    def test_snappy_uses_fixed_pos_path(self):
+        """Verify snappy style uses fixed \\pos() micro-chunk path like punch."""
         plan = self._make_plan(style_id="snappy")
+        transcript = self._make_transcript()
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path = f.name
+        try:
+            generate_ass_subtitles(transcript, plan, path)
+            with open(path) as f:
+                content = f.read()
+            # Snappy uses Liberation Sans font
+            self.assertIn("Liberation Sans", content)
+            # MarginV=346 for snappy
+            self.assertIn(",346,", content)
+            # Every Dialogue has fixed \pos — no karaoke
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            self.assertGreater(len(dialogues), 0)
+            for d in dialogues:
+                text = d.split(",,", 1)[-1]
+                self.assertIn("{\\an5\\pos(540,1180)}", text)
+                self.assertNotIn("{\\k", text)
+                self.assertNotIn("\\N", text)
+        finally:
+            os.unlink(path)
+
+    def test_cinematic_style_unchanged(self):
+        """Verify non-punch/non-snappy styles still use the standard chunking path."""
+        plan = self._make_plan(style_id="cinematic")
         plan.captions.max_words_per_line = 4
         plan.captions.max_lines = 2
         transcript = self._make_transcript()
@@ -230,10 +254,16 @@ class TestHelveticaPunchASS(unittest.TestCase):
             generate_ass_subtitles(transcript, plan, path)
             with open(path) as f:
                 content = f.read()
-            # Should use Inter font (not Liberation Sans)
+            # Should use Inter font
             self.assertIn("Inter", content)
             # Should use MarginV=180 (standard)
             self.assertIn(",180,", content)
+            # Standard path: no \pos override
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            self.assertGreater(len(dialogues), 0)
+            for d in dialogues:
+                text = d.split(",,", 1)[-1]
+                self.assertNotIn("\\pos", text)
         finally:
             os.unlink(path)
 

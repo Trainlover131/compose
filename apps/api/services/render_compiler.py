@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import subprocess
 import tempfile
 import unicodedata
@@ -668,11 +669,16 @@ def _chunk_words_micro(
     max_words: int = 3,
     pause_threshold: float = 0.35,
     end_pad: float = 0.06,
+    weighted_random: bool = False,
 ) -> list[dict]:
     """Group words into micro-chunks of 1–*max_words* words.
 
     Pause-aware: starts a new chunk when the gap between consecutive
     words exceeds *pause_threshold* seconds.
+
+    When *weighted_random* is True, each chunk target size is chosen
+    randomly with weights P(1)=0.65, P(2)=0.25, P(3)=0.10 instead of
+    always filling to *max_words*.
 
     Returns [{start, end, text, words}, ...] where end is optionally padded
     by *end_pad* seconds (40-80ms) to avoid flicker.
@@ -682,12 +688,14 @@ def _chunk_words_micro(
 
     chunks: list[dict] = []
     buf: list[dict] = []
+    # Pick the target size for the current chunk
+    target = random.choices([1, 2, 3], weights=[0.65, 0.25, 0.10], k=1)[0] if weighted_random else max_words
 
     for w in words:
         # Start a new chunk if pause between previous word and this one
         if buf:
             gap = w["start"] - buf[-1]["end"]
-            if gap > pause_threshold or len(buf) >= max_words:
+            if gap > pause_threshold or len(buf) >= target:
                 chunks.append({
                     "start": buf[0]["start"],
                     "end": buf[-1]["end"] + end_pad,
@@ -695,6 +703,8 @@ def _chunk_words_micro(
                     "words": list(buf),
                 })
                 buf = []
+                # Pick a new random target for the next chunk
+                target = random.choices([1, 2, 3], weights=[0.65, 0.25, 0.10], k=1)[0] if weighted_random else max_words
         buf.append(w)
 
     if buf:
@@ -777,7 +787,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{style['fontname']},{style['fontsize']},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,{style['bold']},0,0,0,100,100,{style['spacing']},0,1,{style['outline']},{style['shadow']},2,40,40,{style['margin_v']},1
+Style: Default,{style['fontname']},{style['fontsize']},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,{style['bold']},0,0,0,100,100,{style['spacing']},0,1,{style['outline']},{style['shadow']},2,40,40,{style['margin_v']},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -802,11 +812,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         Path(output_path).write_text(ass_content)
         return output_path
 
-    # --- micro-chunk path for helvetica_punch ----------------------------
-    is_punch = caption_cfg.style_id == "helvetica_punch"
+    # --- micro-chunk path for helvetica_punch & snappy --------------------
+    _Y_FIXED = 1180  # fixed vertical position for punch/snappy (center-center)
+    is_fixed_pos_style = caption_cfg.style_id in ("helvetica_punch", "snappy")
 
-    if is_punch:
-        micro = _chunk_words_micro(all_words, max_words=3)
+    if is_fixed_pos_style:
+        micro = _chunk_words_micro(all_words, max_words=3, weighted_random=True)
+        pos_count = 0
         for ch in micro:
             chunk_words = ch["words"]
             chunk_start = chunk_words[0]["start"]
@@ -819,23 +831,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             mapped_end += 0.02
             start_str = _format_ass_time(mapped_start)
             end_str = _format_ass_time(mapped_end)
-            # Build karaoke-tagged text with per-word timing
-            karaoke_parts = []
-            for i, w in enumerate(chunk_words):
-                cleaned = w["word"].strip()
-                start_i = w["start"]
-                if i + 1 < len(chunk_words):
-                    start_next = chunk_words[i + 1]["start"]
-                else:
-                    start_next = chunk_end
-                dur = max(0.01, min(5.0, start_next - start_i))
-                cs = max(1, int(round(dur * 100)))
-                karaoke_parts.append(f"{{\\k{cs}}}{cleaned}")
-            text = "{\\an2}" + " ".join(karaoke_parts)
+            # Plain white text — no karaoke tags, no line breaks
+            plain_text = " ".join(w["word"].strip() for w in chunk_words)
+            plain_text = plain_text.replace("\\N", " ").replace("\n", " ")
+            text = f"{{\\an5\\pos(540,{_Y_FIXED})}}{plain_text}"
             ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}\n"
+            pos_count += 1
 
         Path(output_path).write_text(ass_content)
-        logger.info("ASS captions: style_id=%s font=%s chunks=%d", caption_cfg.style_id, style["fontname"], len(micro))
+        logger.info(
+            "ASS captions: style_id=%s font=%s chunks=%d | fixed \\pos() lines=%d Y_FIXED=%d",
+            caption_cfg.style_id, style["fontname"], len(micro), pos_count, _Y_FIXED,
+        )
         return output_path
 
     # --- standard chunking path (unchanged) ------------------------------
