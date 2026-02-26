@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import re as _re
 import subprocess
 import tempfile
 import unicodedata
@@ -744,6 +745,127 @@ def _pick_helvetica_font() -> str:
     return _HELVETICA_FONT_FALLBACK[0]
 
 
+# ---------------------------------------------------------------------------
+# Font resolution map:  user-friendly name -> fontconfig family candidates
+# ---------------------------------------------------------------------------
+_FONT_ALIAS_MAP: dict[str, tuple[str, ...]] = {
+    "helvetica": _HELVETICA_FONT_FALLBACK,
+    "liberation sans": ("Liberation Sans",),
+    "inter": ("Inter", "Liberation Sans", "DejaVu Sans"),
+    "roboto": ("Roboto", "Liberation Sans", "DejaVu Sans"),
+    "garamond": ("EB Garamond", "DejaVu Serif"),
+    "playfair display": ("Playfair Display", "EB Garamond", "DejaVu Serif"),
+    "playfair display italic": ("Playfair Display", "EB Garamond", "DejaVu Serif"),
+    "dejavu sans": ("DejaVu Sans",),
+    "dejavu serif": ("DejaVu Serif",),
+    "liberation serif": ("Liberation Serif",),
+}
+
+
+def _resolve_font(name: str | None) -> str | None:
+    """Resolve a user-friendly font name to an installed fontconfig family.
+
+    Returns ``None`` when *name* is ``None`` (caller uses preset default).
+    Never crashes — always falls back to a safe font.
+    """
+    if not name:
+        return None
+
+    key = name.strip().lower()
+
+    # Check alias map first
+    candidates = _FONT_ALIAS_MAP.get(key)
+    if candidates is None:
+        # Try exact name, then fall through to alias values
+        candidates = (name.strip(),) + _HELVETICA_FONT_FALLBACK
+
+    # Probe via fc-list if available
+    import shutil
+    if shutil.which("fc-list"):
+        try:
+            out = subprocess.check_output(
+                ["fc-list", "--format", "%{family}\n"],
+                timeout=5, text=True,
+            )
+            families = {f.strip() for f in out.splitlines()}
+            for c in candidates:
+                if c in families:
+                    return c
+        except Exception:
+            pass
+
+    # Return the first candidate as best-effort
+    return candidates[0]
+
+
+_HEX_COLOR_RE = _re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def _hex_to_ass_color(hex_color: str | None, default: str = "&H00FFFFFF") -> str:
+    """Convert ``#RRGGBB`` to ASS ``&H00BBGGRR``.  Returns *default* on bad input."""
+    if not hex_color or not _HEX_COLOR_RE.match(hex_color):
+        return default
+    r, g, b = hex_color[1:3], hex_color[3:5], hex_color[5:7]
+    return f"&H00{b.upper()}{g.upper()}{r.upper()}"
+
+
+def _clamp(val: int | float | None, lo: int | float, hi: int | float, default: int | float) -> int | float:
+    """Clamp *val* to [lo, hi], returning *default* when val is None."""
+    if val is None:
+        return default
+    return max(lo, min(hi, val))
+
+
+def _apply_caption_style(style: dict, caption_style) -> dict:
+    """Apply ``CaptionStyle`` overrides onto a mutable *style* preset dict.
+
+    Only fields that are not ``None`` in *caption_style* override the preset.
+    Returns the same dict (mutated in place).
+    """
+    if caption_style is None:
+        return style
+
+    # Font
+    resolved_primary = _resolve_font(caption_style.font_primary)
+    if resolved_primary:
+        style["fontname"] = resolved_primary
+
+    # Size
+    if caption_style.size is not None:
+        style["fontsize"] = int(_clamp(caption_style.size, 24, 96, style["fontsize"]))
+
+    # Bold / italic
+    if caption_style.bold is not None:
+        style["bold"] = 1 if caption_style.bold else 0
+    if caption_style.italic is not None:
+        style["italic"] = 1 if caption_style.italic else 0
+
+    # Colors (stored for ASS header generation)
+    if caption_style.color is not None:
+        style["_primary_colour"] = _hex_to_ass_color(caption_style.color)
+    if caption_style.outline_color is not None:
+        style["_outline_colour"] = _hex_to_ass_color(caption_style.outline_color, "&H00000000")
+
+    # Outline / shadow
+    if caption_style.outline_width is not None:
+        style["outline"] = int(_clamp(caption_style.outline_width, 0, 10, style["outline"]))
+    if caption_style.shadow_depth is not None:
+        style["shadow"] = int(_clamp(caption_style.shadow_depth, 0, 10, style["shadow"]))
+
+    # Tracking (letter spacing)
+    if caption_style.tracking is not None:
+        style["spacing"] = int(_clamp(caption_style.tracking, -8, 8, style["spacing"]))
+
+    # Position
+    if caption_style.y is not None:
+        style["_y_override"] = int(_clamp(caption_style.y, 600, 1700, 1180))
+    if caption_style.align is not None:
+        align = int(caption_style.align)
+        style["_align_override"] = align if 1 <= align <= 9 else 5
+
+    return style
+
+
 def generate_ass_subtitles(
     transcript: dict,
     edit_plan: EditPlan,
@@ -776,7 +898,30 @@ def generate_ass_subtitles(
         },
     }
     style = style_presets.get(caption_cfg.style_id, style_presets["default"])
-    logger.info("ASS captions: style_id=%s font=%s", caption_cfg.style_id, style["fontname"])
+    is_fixed_pos_style = caption_cfg.style_id in ("helvetica_punch", "snappy")
+
+    # --- apply user-driven style overrides (helvetica_punch / snappy only) -
+    caption_style = caption_cfg.style
+    if is_fixed_pos_style and caption_style is not None:
+        _apply_caption_style(style, caption_style)
+
+    # Resolve colours for ASS header
+    primary_colour = style.get("_primary_colour", "&H00FFFFFF")
+    # SecondaryColour: white by default; when karaoke is enabled use karaoke
+    # highlight colour (or red).
+    karaoke_enabled = (
+        caption_style is not None
+        and caption_style.karaoke is not None
+        and caption_style.karaoke.enabled is True
+    ) if caption_style else False
+    if karaoke_enabled and caption_style and caption_style.karaoke:
+        secondary_colour = _hex_to_ass_color(
+            caption_style.karaoke.color, "&H000000FF",
+        )
+    else:
+        secondary_colour = primary_colour  # match primary → no karaoke flash
+    outline_colour = style.get("_outline_colour", "&H00000000")
+    italic = style.get("italic", 0)
 
     ass_content = f"""[Script Info]
 Title: Compose Captions
@@ -787,7 +932,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{style['fontname']},{style['fontsize']},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,{style['bold']},0,0,0,100,100,{style['spacing']},0,1,{style['outline']},{style['shadow']},2,40,40,{style['margin_v']},1
+Style: Default,{style['fontname']},{style['fontsize']},{primary_colour},{secondary_colour},{outline_colour},&H80000000,{style['bold']},{italic},0,0,100,100,{style['spacing']},0,1,{style['outline']},{style['shadow']},2,40,40,{style['margin_v']},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -813,8 +958,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         return output_path
 
     # --- micro-chunk path for helvetica_punch & snappy --------------------
-    _Y_FIXED = 1180  # fixed vertical position for punch/snappy (center-center)
-    is_fixed_pos_style = caption_cfg.style_id in ("helvetica_punch", "snappy")
+    _Y_DEFAULT = 1180  # default fixed vertical position for punch/snappy
+    _Y_FIXED = style.get("_y_override", _Y_DEFAULT)
+    _ALIGN = style.get("_align_override", 5)
 
     if is_fixed_pos_style:
         micro = _chunk_words_micro(all_words, max_words=3, weighted_random=True)
@@ -831,17 +977,36 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             mapped_end += 0.02
             start_str = _format_ass_time(mapped_start)
             end_str = _format_ass_time(mapped_end)
-            # Plain white text — no karaoke tags, no line breaks
+
             plain_text = " ".join(w["word"].strip() for w in chunk_words)
             plain_text = plain_text.replace("\\N", " ").replace("\n", " ")
-            text = f"{{\\an5\\pos(540,{_Y_FIXED})}}{plain_text}"
+
+            if karaoke_enabled:
+                # Build karaoke-tagged text with per-word timing
+                karaoke_parts = []
+                for i, w in enumerate(chunk_words):
+                    cleaned = w["word"].strip()
+                    start_i = w["start"]
+                    if i + 1 < len(chunk_words):
+                        start_next = chunk_words[i + 1]["start"]
+                    else:
+                        start_next = chunk_end
+                    dur = max(0.01, min(5.0, start_next - start_i))
+                    cs = max(1, int(round(dur * 100)))
+                    karaoke_parts.append(f"{{\\k{cs}}}{cleaned}")
+                text = f"{{\\an{_ALIGN}\\pos(540,{_Y_FIXED})}}" + " ".join(karaoke_parts)
+            else:
+                text = f"{{\\an{_ALIGN}\\pos(540,{_Y_FIXED})}}{plain_text}"
+
             ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}\n"
             pos_count += 1
 
         Path(output_path).write_text(ass_content)
         logger.info(
-            "ASS captions: style_id=%s font=%s chunks=%d | fixed \\pos() lines=%d Y_FIXED=%d",
-            caption_cfg.style_id, style["fontname"], len(micro), pos_count, _Y_FIXED,
+            "ASS captions: style_id=%s font=%s size=%d tracking=%d y=%d "
+            "karaoke=%s lines=%d",
+            caption_cfg.style_id, style["fontname"], style["fontsize"],
+            style["spacing"], _Y_FIXED, karaoke_enabled, pos_count,
         )
         return output_path
 
