@@ -1,16 +1,24 @@
 FROM python:3.12-slim
 
 # Install FFmpeg + ASS deps + faster-whisper native runtime deps
+# Keep minimal system fonts only (dejavu, liberation, noto-core, noto-emoji)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libass-dev \
     fonts-liberation \
+    fonts-dejavu-core \
+    fonts-noto-core \
+    fonts-noto-color-emoji \
     curl \
     libgomp1 \
     libstdc++6 \
     frei0r-plugins \
-    && fc-cache -fv \
     && rm -rf /var/lib/apt/lists/*
+
+# Custom fonts from assets/fonts/ (Playfair Display, etc.)
+RUN mkdir -p /usr/local/share/fonts/custom
+COPY assets/fonts/ /usr/local/share/fonts/custom/
+RUN fc-cache -f -v
 
 WORKDIR /app
 

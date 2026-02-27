@@ -746,19 +746,55 @@ def _pick_helvetica_font() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Font resolution map:  user-friendly name -> fontconfig family candidates
+# Font resolution map:  intent-based alias -> fontconfig family candidates
+#
+# When the user asks for a font *vibe* (helvetica/clean/editorial/script/…)
+# we pick from ordered fallback chains.  Prefer the first available font.
+# If the user asks for a specific font name, try it first; if unavailable,
+# fall back to the closest intent chain.
 # ---------------------------------------------------------------------------
+_SANS_CHAIN = ("Liberation Sans", "Roboto", "DejaVu Sans", "Noto Sans")
+_SERIF_CHAIN = ("Playfair Display", "EB Garamond", "DejaVu Serif", "Noto Serif")
+_HANDWRITTEN_CHAIN = ("Comic Neue", "DejaVu Sans", "Noto Sans")
+_MONO_CHAIN = ("Noto Mono", "DejaVu Sans Mono")
+
 _FONT_ALIAS_MAP: dict[str, tuple[str, ...]] = {
+    # Sans / helvetica / clean / modern
     "helvetica": _HELVETICA_FONT_FALLBACK,
+    "clean": _SANS_CHAIN,
+    "modern": _SANS_CHAIN,
+    "sans": _SANS_CHAIN,
     "liberation sans": ("Liberation Sans",),
     "inter": ("Inter", "Liberation Sans", "DejaVu Sans"),
     "roboto": ("Roboto", "Liberation Sans", "DejaVu Sans"),
-    "garamond": ("EB Garamond", "DejaVu Serif"),
-    "playfair display": ("Playfair Display", "EB Garamond", "DejaVu Serif"),
-    "playfair display italic": ("Playfair Display", "EB Garamond", "DejaVu Serif"),
-    "dejavu sans": ("DejaVu Sans",),
+    "lato": ("Lato", "Liberation Sans", "DejaVu Sans"),
+    "noto sans": ("Noto Sans", "DejaVu Sans"),
+    # Serif / classic / editorial / fancy / playfair
+    "serif": _SERIF_CHAIN,
+    "classic": _SERIF_CHAIN,
+    "editorial": _SERIF_CHAIN,
+    "fancy": _SERIF_CHAIN,
+    "garamond": ("EB Garamond", "DejaVu Serif", "Noto Serif"),
+    "eb garamond": ("EB Garamond", "DejaVu Serif", "Noto Serif"),
+    "playfair display": _SERIF_CHAIN,
+    "playfair display italic": _SERIF_CHAIN,
+    "playfair": _SERIF_CHAIN,
     "dejavu serif": ("DejaVu Serif",),
-    "liberation serif": ("Liberation Serif",),
+    "liberation serif": ("Liberation Serif", "DejaVu Serif"),
+    "noto serif": ("Noto Serif", "DejaVu Serif"),
+    # Handwritten / cursive / script
+    "handwritten": _HANDWRITTEN_CHAIN,
+    "cursive": _HANDWRITTEN_CHAIN,
+    "script": _HANDWRITTEN_CHAIN,
+    "comic neue": _HANDWRITTEN_CHAIN,
+    # Mono / code / terminal
+    "mono": _MONO_CHAIN,
+    "code": _MONO_CHAIN,
+    "terminal": _MONO_CHAIN,
+    "noto mono": _MONO_CHAIN,
+    # Other system fonts
+    "dejavu sans": ("DejaVu Sans",),
+    "noto color emoji": ("Noto Color Emoji",),
 }
 
 
@@ -800,12 +836,45 @@ def _resolve_font(name: str | None) -> str | None:
 
 _HEX_COLOR_RE = _re.compile(r"^#[0-9A-Fa-f]{6}$")
 
+# Named color map — lowercased keys
+_NAMED_COLORS: dict[str, str] = {
+    "red": "#FF0000",
+    "orange": "#FF8800",
+    "blue": "#0066FF",
+    "green": "#00CC00",
+    "yellow": "#FFCC00",
+    "white": "#FFFFFF",
+    "black": "#000000",
+    "pink": "#FF69B4",
+    "cyan": "#00FFFF",
+    "purple": "#9900FF",
+}
+
+
+def _normalize_color(color: str | None) -> str | None:
+    """Normalise a color value to ``#RRGGBB``.
+
+    Accepts ``#RRGGBB`` hex or a named color (case-insensitive).
+    Returns ``None`` on unrecognised input so callers can fall back.
+    """
+    if not color:
+        return None
+    color = color.strip()
+    if _HEX_COLOR_RE.match(color):
+        return color
+    named = _NAMED_COLORS.get(color.lower())
+    return named  # None if not found
+
 
 def _hex_to_ass_color(hex_color: str | None, default: str = "&H00FFFFFF") -> str:
-    """Convert ``#RRGGBB`` to ASS ``&H00BBGGRR``.  Returns *default* on bad input."""
-    if not hex_color or not _HEX_COLOR_RE.match(hex_color):
+    """Convert ``#RRGGBB`` (or named color) to ASS ``&H00BBGGRR``.
+
+    Returns *default* on bad / unrecognised input.
+    """
+    normalized = _normalize_color(hex_color)
+    if normalized is None:
         return default
-    r, g, b = hex_color[1:3], hex_color[3:5], hex_color[5:7]
+    r, g, b = normalized[1:3], normalized[3:5], normalized[5:7]
     return f"&H00{b.upper()}{g.upper()}{r.upper()}"
 
 
@@ -858,7 +927,7 @@ def _apply_caption_style(style: dict, caption_style) -> dict:
 
     # Position
     if caption_style.y is not None:
-        style["_y_override"] = int(_clamp(caption_style.y, 600, 1700, 1180))
+        style["_y_override"] = int(_clamp(caption_style.y, 600, 1700, 960))
     if caption_style.align is not None:
         align = int(caption_style.align)
         style["_align_override"] = align if 1 <= align <= 9 else 5
@@ -906,20 +975,26 @@ def generate_ass_subtitles(
         _apply_caption_style(style, caption_style)
 
     # Resolve colours for ASS header
-    primary_colour = style.get("_primary_colour", "&H00FFFFFF")
-    # SecondaryColour: white by default; when karaoke is enabled use karaoke
-    # highlight colour (or red).
+    # Part 5 color logic:
+    #   - karaoke + color => PrimaryColour=white (unless base color set), SecondaryColour=karaoke.color
+    #   - color only (no karaoke) => PrimaryColour=that color, SecondaryColour matches
+    #   - no color => white, no karaoke
     karaoke_enabled = (
         caption_style is not None
         and caption_style.karaoke is not None
         and caption_style.karaoke.enabled is True
     ) if caption_style else False
+
+    primary_colour = style.get("_primary_colour", "&H00FFFFFF")
     if karaoke_enabled and caption_style and caption_style.karaoke:
+        # Karaoke ON: SecondaryColour = highlight color; PrimaryColour stays
+        # as-is (white unless user explicitly set base color via style.color)
         secondary_colour = _hex_to_ass_color(
             caption_style.karaoke.color, "&H000000FF",
         )
     else:
-        secondary_colour = primary_colour  # match primary → no karaoke flash
+        # No karaoke: SecondaryColour matches PrimaryColour (no highlighting)
+        secondary_colour = primary_colour
     outline_colour = style.get("_outline_colour", "&H00000000")
     italic = style.get("italic", 0)
 
@@ -958,12 +1033,31 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         return output_path
 
     # --- micro-chunk path for helvetica_punch & snappy --------------------
-    _Y_DEFAULT = 1180  # default fixed vertical position for punch/snappy
+    _Y_DEFAULT = 960  # center screen for 1080x1920
     _Y_FIXED = style.get("_y_override", _Y_DEFAULT)
     _ALIGN = style.get("_align_override", 5)
 
     if is_fixed_pos_style:
         micro = _chunk_words_micro(all_words, max_words=3, weighted_random=True)
+
+        # --- emphasis font heuristic (Part 4) --------------------------------
+        emphasis_font: str | None = None
+        emphasis_threshold: float = 0.4  # default pause gap in seconds
+        emphasis_enabled = False
+        if caption_style is not None and caption_style.pause_emphasis is not None:
+            pe = caption_style.pause_emphasis
+            if pe.enabled:
+                emphasis_enabled = True
+                if pe.threshold_sec is not None:
+                    emphasis_threshold = max(0.1, min(2.0, pe.threshold_sec))
+                emphasis_font = _resolve_font(
+                    caption_style.font_emphasis if caption_style.font_emphasis else None,
+                )
+                if emphasis_font is None:
+                    emphasis_font = style["fontname"]  # same as primary
+        primary_font = style["fontname"]
+        emphasis_applied = 0  # count of chunks where emphasis was applied
+
         pos_count = 0
         for ch in micro:
             chunk_words = ch["words"]
@@ -981,6 +1075,20 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             plain_text = " ".join(w["word"].strip() for w in chunk_words)
             plain_text = plain_text.replace("\\N", " ").replace("\n", " ")
 
+            # --- emphasis wrapping decision ----------------------------------
+            apply_emph = False
+            if emphasis_enabled and emphasis_font and len(chunk_words) >= 1:
+                # Pause-based: check gap to next chunk's first word
+                chunk_idx = micro.index(ch)
+                if chunk_idx + 1 < len(micro):
+                    next_first = micro[chunk_idx + 1]["words"][0]
+                    gap = next_first["start"] - chunk_end
+                    if gap >= emphasis_threshold:
+                        apply_emph = True
+                # Fallback: every 8th chunk (1-indexed, so 8th, 16th, …)
+                if not apply_emph and (pos_count + 1) % 8 == 0:
+                    apply_emph = True
+
             if karaoke_enabled:
                 # Build karaoke-tagged text with per-word timing
                 karaoke_parts = []
@@ -993,10 +1101,28 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         start_next = chunk_end
                     dur = max(0.01, min(5.0, start_next - start_i))
                     cs = max(1, int(round(dur * 100)))
-                    karaoke_parts.append(f"{{\\k{cs}}}{cleaned}")
+                    # Emphasis on last word of chunk
+                    if apply_emph and i == len(chunk_words) - 1:
+                        karaoke_parts.append(
+                            f"{{\\kf{cs}}}{{\\fn{emphasis_font}}}{cleaned}{{\\fn{primary_font}}}"
+                        )
+                    else:
+                        karaoke_parts.append(f"{{\\kf{cs}}}{cleaned}")
                 text = f"{{\\an{_ALIGN}\\pos(540,{_Y_FIXED})}}" + " ".join(karaoke_parts)
             else:
-                text = f"{{\\an{_ALIGN}\\pos(540,{_Y_FIXED})}}{plain_text}"
+                if apply_emph and len(chunk_words) >= 1:
+                    # Wrap last word with emphasis font
+                    word_parts = [w["word"].strip() for w in chunk_words]
+                    last = word_parts[-1]
+                    word_parts[-1] = f"{{\\fn{emphasis_font}}}{last}{{\\fn{primary_font}}}"
+                    emph_text = " ".join(word_parts)
+                    emph_text = emph_text.replace("\\N", " ").replace("\n", " ")
+                    text = f"{{\\an{_ALIGN}\\pos(540,{_Y_FIXED})}}{emph_text}"
+                else:
+                    text = f"{{\\an{_ALIGN}\\pos(540,{_Y_FIXED})}}{plain_text}"
+
+            if apply_emph:
+                emphasis_applied += 1
 
             ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}\n"
             pos_count += 1
@@ -1004,9 +1130,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         Path(output_path).write_text(ass_content)
         logger.info(
             "ASS captions: style_id=%s font=%s size=%d tracking=%d y=%d "
-            "karaoke=%s lines=%d",
+            "karaoke=%s emphasis_font=%s emphasis_applied=%d lines=%d",
             caption_cfg.style_id, style["fontname"], style["fontsize"],
-            style["spacing"], _Y_FIXED, karaoke_enabled, pos_count,
+            style["spacing"], _Y_FIXED, karaoke_enabled,
+            emphasis_font or "none", emphasis_applied, pos_count,
         )
         return output_path
 
