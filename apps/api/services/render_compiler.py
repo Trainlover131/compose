@@ -746,57 +746,109 @@ def _pick_helvetica_font() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Font resolution map:  intent-based alias -> fontconfig family candidates
+# Font resolution map: intent-based alias -> fontconfig family candidates
 #
-# When the user asks for a font *vibe* (helvetica/clean/editorial/script/…)
-# we pick from ordered fallback chains.  Prefer the first available font.
-# If the user asks for a specific font name, try it first; if unavailable,
-# fall back to the closest intent chain.
+# Prefer the first available family (fc-list). If user asks for a specific
+# font name, try it first; if unavailable, fall back to the closest chain.
+# NOTE: keys are normalized to lowercase in the resolver (recommended).
 # ---------------------------------------------------------------------------
-_SANS_CHAIN = ("Liberation Sans", "Roboto", "DejaVu Sans", "Noto Sans")
+
+_SANS_CHAIN = ("Google Sans", "Inter", "Roboto Condensed", "Liberation Sans", "DejaVu Sans", "Noto Sans")
 _SERIF_CHAIN = ("Playfair Display", "EB Garamond", "DejaVu Serif", "Noto Serif")
-_HANDWRITTEN_CHAIN = ("Comic Neue", "DejaVu Sans", "Noto Sans")
-_MONO_CHAIN = ("Noto Mono", "DejaVu Sans Mono")
+_HANDWRITTEN_CHAIN = ("Shadows Into Light", "Comic Neue", "DejaVu Sans", "Noto Sans")
+_SCRIPT_CHAIN = ("Pinyon Script", "Comic Neue Italic", "Comic Neue", "DejaVu Sans")
+_MONO_CHAIN = ("JetBrains Mono", "DejaVu Sans Mono", "Noto Mono")
+_GOTHIC_CHAIN = ("UnifrakturMaguntia", "DejaVu Serif")
+_CONDENSED_CHAIN = ("Roboto Condensed", "Google Sans", "Inter", "Liberation Sans", "DejaVu Sans")
 
 _FONT_ALIAS_MAP: dict[str, tuple[str, ...]] = {
-    # Sans / helvetica / clean / modern
+    # ---------------------------
+    # Sans / helvetica / clean
+    # ---------------------------
     "helvetica": _HELVETICA_FONT_FALLBACK,
+    "sans": _SANS_CHAIN,
     "clean": _SANS_CHAIN,
     "modern": _SANS_CHAIN,
-    "sans": _SANS_CHAIN,
-    "liberation sans": ("Liberation Sans",),
+    "ui": _SANS_CHAIN,
+    "default": _SANS_CHAIN,
+
+    "google sans": ("Google Sans", "GoogleSans", "Inter", "Liberation Sans", "DejaVu Sans"),
+    "googlesans": ("Google Sans", "GoogleSans", "Inter", "Liberation Sans", "DejaVu Sans"),
+
     "inter": ("Inter", "Liberation Sans", "DejaVu Sans"),
-    "roboto": ("Roboto", "Liberation Sans", "DejaVu Sans"),
-    "lato": ("Lato", "Liberation Sans", "DejaVu Sans"),
+    "roboto": ("Roboto", "Roboto Condensed", "Inter", "Liberation Sans", "DejaVu Sans"),
+    "roboto condensed": ("Roboto Condensed", "Roboto_Condensed", "Inter", "Liberation Sans", "DejaVu Sans"),
+    "condensed": _CONDENSED_CHAIN,
+    "narrow": _CONDENSED_CHAIN,
+
+    "liberation sans": ("Liberation Sans",),
+    "dejavu sans": ("DejaVu Sans",),
     "noto sans": ("Noto Sans", "DejaVu Sans"),
-    # Serif / classic / editorial / fancy / playfair
+
+    # ---------------------------
+    # Serif / editorial / fancy
+    # ---------------------------
     "serif": _SERIF_CHAIN,
     "classic": _SERIF_CHAIN,
     "editorial": _SERIF_CHAIN,
     "fancy": _SERIF_CHAIN,
-    "garamond": ("EB Garamond", "DejaVu Serif", "Noto Serif"),
-    "eb garamond": ("EB Garamond", "DejaVu Serif", "Noto Serif"),
-    "playfair display": _SERIF_CHAIN,
-    "playfair display italic": _SERIF_CHAIN,
-    "playfair": _SERIF_CHAIN,
+
+    "playfair": ("Playfair Display", "PlayfairDisplay", "EB Garamond", "EBGaramond", "DejaVu Serif"),
+    "playfair display": ("Playfair Display", "PlayfairDisplay", "EB Garamond", "EBGaramond", "DejaVu Serif"),
+    "playfair display italic": ("Playfair Display", "PlayfairDisplay", "EB Garamond", "EBGaramond", "DejaVu Serif"),
+
+    "garamond": ("EB Garamond", "EBGaramond", "DejaVu Serif", "Noto Serif"),
+    "eb garamond": ("EB Garamond", "EBGaramond", "DejaVu Serif", "Noto Serif"),
+
     "dejavu serif": ("DejaVu Serif",),
     "liberation serif": ("Liberation Serif", "DejaVu Serif"),
     "noto serif": ("Noto Serif", "DejaVu Serif"),
-    # Handwritten / cursive / script
+
+    # ---------------------------
+    # Handwritten / script vibes
+    # ---------------------------
     "handwritten": _HANDWRITTEN_CHAIN,
-    "cursive": _HANDWRITTEN_CHAIN,
-    "script": _HANDWRITTEN_CHAIN,
-    "comic neue": _HANDWRITTEN_CHAIN,
+    "casual": _HANDWRITTEN_CHAIN,
+
+    "comic": ("Comic Neue", "ComicNeue", "DejaVu Sans"),
+    "comic neue": ("Comic Neue", "ComicNeue", "DejaVu Sans"),
+
+    "shadows": ("Shadows Into Light", "ShadowsIntoLight", "Comic Neue", "DejaVu Sans"),
+    "shadows into light": ("Shadows Into Light", "ShadowsIntoLight", "Comic Neue", "DejaVu Sans"),
+
+    "script": _SCRIPT_CHAIN,
+    "cursive": _SCRIPT_CHAIN,
+
+    "pinyon": ("Pinyon Script", "PinyonScript", "Comic Neue Italic", "Comic Neue", "DejaVu Sans"),
+    "pinyon script": ("Pinyon Script", "PinyonScript", "Comic Neue Italic", "Comic Neue", "DejaVu Sans"),
+
+    # ---------------------------
     # Mono / code / terminal
+    # ---------------------------
     "mono": _MONO_CHAIN,
     "code": _MONO_CHAIN,
     "terminal": _MONO_CHAIN,
-    "noto mono": _MONO_CHAIN,
-    # Other system fonts
-    "dejavu sans": ("DejaVu Sans",),
+
+    "jetbrains mono": ("JetBrains Mono", "JetBrainsMono", "DejaVu Sans Mono", "Noto Mono"),
+    "jetbrainsmono": ("JetBrains Mono", "JetBrainsMono", "DejaVu Sans Mono", "Noto Mono"),
+
+    "dejavu sans mono": ("DejaVu Sans Mono",),
+    "noto mono": ("Noto Mono", "DejaVu Sans Mono"),
+
+    # ---------------------------
+    # Gothic / blackletter
+    # ---------------------------
+    "gothic": _GOTHIC_CHAIN,
+    "blackletter": _GOTHIC_CHAIN,
+    "unifraktur": ("UnifrakturMaguntia", "DejaVu Serif"),
+    "unifrakturmaguntia": ("UnifrakturMaguntia", "DejaVu Serif"),
+
+    # ---------------------------
+    # Emoji
+    # ---------------------------
+    "emoji": ("Noto Color Emoji",),
     "noto color emoji": ("Noto Color Emoji",),
 }
-
 
 def _resolve_font(name: str | None) -> str | None:
     """Resolve a user-friendly font name to an installed fontconfig family.
