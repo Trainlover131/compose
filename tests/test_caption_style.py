@@ -376,7 +376,7 @@ class TestCaptionStyleASS(unittest.TestCase):
             self.assertGreater(len(dialogues), 0)
             for d in dialogues:
                 text = d.split(",,", 1)[-1]
-                self.assertIn("{\\an5\\pos(540,1180)}", text)
+                self.assertIn("{\\an5\\pos(540,960)}", text)
                 self.assertNotIn("{\\k", text)
         finally:
             os.unlink(path)
@@ -395,9 +395,9 @@ class TestCaptionStyleASS(unittest.TestCase):
                 content = f.read()
             dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
             self.assertGreater(len(dialogues), 0)
-            # At least one dialogue line should have karaoke tags
-            has_karaoke = any("{\\k" in d for d in dialogues)
-            self.assertTrue(has_karaoke, "Expected karaoke tags when enabled")
+            # At least one dialogue line should have \kf karaoke fill tags
+            has_karaoke = any("{\\kf" in d for d in dialogues)
+            self.assertTrue(has_karaoke, "Expected \\kf karaoke tags when enabled")
             # SecondaryColour should be red (BGR for #FF0000 = 0000FF)
             self.assertIn("&H000000FF", content)
         finally:
@@ -504,6 +504,568 @@ class TestCaptionStyleASS(unittest.TestCase):
             self.assertIn(",1,1,", style_line)
         finally:
             os.unlink(path)
+
+
+# ── Karaoke \kf tag tests ─────────────────────────────────────────────────
+
+class TestKaraokeFillTags(unittest.TestCase):
+    r"""Verify \kf (fill) tags are used and PrimaryColour stays white."""
+
+    def _make_plan(self, style=None):
+        data = {
+            "version": "1",
+            "preset_id": "snappy-creator",
+            "output": {"aspect_ratio": "9:16", "resolution": [1080, 1920], "max_duration_sec": 30},
+            "main_cuts": [{"start": 0.0, "end": 10.0}],
+            "punch_ins": [],
+            "broll": {"enabled": False, "strategy": "cutaway_fullscreen", "inserts": []},
+            "overlays": {"enabled": False, "items": []},
+            "captions": {
+                "enabled": True,
+                "style_id": "helvetica_punch",
+                "max_words_per_line": 3,
+                "max_lines": 1,
+            },
+            "music": {"enabled": False, "track_id": "upbeat-energy", "target_volume_db": -18.0},
+            "rationale": {"hook": "test", "structure": []},
+        }
+        if style is not None:
+            data["captions"]["style"] = style
+        return EditPlan.model_validate(data)
+
+    def _make_transcript(self):
+        return {
+            "text": "Hello world test again",
+            "segments": [{
+                "id": 0, "start": 0.0, "end": 2.0,
+                "text": "Hello world test again",
+                "words": [
+                    {"word": "Hello", "start": 0.0, "end": 0.3, "probability": 0.99},
+                    {"word": "world", "start": 0.35, "end": 0.6, "probability": 0.99},
+                    {"word": "test", "start": 0.65, "end": 0.9, "probability": 0.99},
+                    {"word": "again", "start": 0.95, "end": 1.2, "probability": 0.99},
+                ],
+            }],
+            "language": "en",
+        }
+
+    def test_karaoke_uses_kf_tags(self):
+        """Karaoke mode should emit \\kf (fill) tags, not plain \\k."""
+        plan = self._make_plan(style={
+            "karaoke": {"enabled": True, "color": "#FF8800"},
+        })
+        transcript = self._make_transcript()
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path = f.name
+        try:
+            generate_ass_subtitles(transcript, plan, path)
+            with open(path) as f:
+                content = f.read()
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            self.assertGreater(len(dialogues), 0)
+            import re
+            has_kf = False
+            for d in dialogues:
+                text = d.split(",,", 1)[-1]
+                kf_tags = re.findall(r"\\kf\d+", text)
+                if kf_tags:
+                    has_kf = True
+                # Ensure no bare \k (without f) — \k\d+ but not \kf\d+
+                bare_k = re.findall(r"\\k(?!f)\d+", text)
+                self.assertEqual(len(bare_k), 0,
+                                 f"Found bare \\k tags (should be \\kf): {bare_k}")
+            self.assertTrue(has_kf, "Expected \\kf karaoke tags in output")
+        finally:
+            os.unlink(path)
+
+    def test_karaoke_white_primary_colour(self):
+        """With karaoke enabled, PrimaryColour should be white."""
+        plan = self._make_plan(style={
+            "karaoke": {"enabled": True, "color": "#FF8800"},
+        })
+        transcript = self._make_transcript()
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path = f.name
+        try:
+            generate_ass_subtitles(transcript, plan, path)
+            with open(path) as f:
+                content = f.read()
+            style_line = [l for l in content.splitlines() if l.startswith("Style:")][0]
+            # PrimaryColour is the 4th field (0-indexed: Name=0, Fontname=1, Fontsize=2, Primary=3)
+            parts = style_line.split(",")
+            primary = parts[3]
+            self.assertEqual(primary, "&H00FFFFFF",
+                             "PrimaryColour should be white when karaoke is on")
+        finally:
+            os.unlink(path)
+
+    def test_karaoke_secondary_is_highlight_color(self):
+        """SecondaryColour should be the karaoke highlight color."""
+        plan = self._make_plan(style={
+            "karaoke": {"enabled": True, "color": "#FF8800"},
+        })
+        transcript = self._make_transcript()
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path = f.name
+        try:
+            generate_ass_subtitles(transcript, plan, path)
+            with open(path) as f:
+                content = f.read()
+            style_line = [l for l in content.splitlines() if l.startswith("Style:")][0]
+            parts = style_line.split(",")
+            secondary = parts[4]
+            # #FF8800 => &H000088FF (BGR swap)
+            self.assertEqual(secondary, "&H000088FF",
+                             "SecondaryColour should be karaoke highlight color")
+        finally:
+            os.unlink(path)
+
+
+# ── Non-karaoke orange color test ─────────────────────────────────────────
+
+class TestNonKaraokeColor(unittest.TestCase):
+    """When color is set but karaoke is off, no \\k tags should appear."""
+
+    def _make_plan(self, style=None):
+        data = {
+            "version": "1",
+            "preset_id": "snappy-creator",
+            "output": {"aspect_ratio": "9:16", "resolution": [1080, 1920], "max_duration_sec": 30},
+            "main_cuts": [{"start": 0.0, "end": 10.0}],
+            "punch_ins": [],
+            "broll": {"enabled": False, "strategy": "cutaway_fullscreen", "inserts": []},
+            "overlays": {"enabled": False, "items": []},
+            "captions": {
+                "enabled": True,
+                "style_id": "helvetica_punch",
+                "max_words_per_line": 3,
+                "max_lines": 1,
+            },
+            "music": {"enabled": False, "track_id": "upbeat-energy", "target_volume_db": -18.0},
+            "rationale": {"hook": "test", "structure": []},
+        }
+        if style is not None:
+            data["captions"]["style"] = style
+        return EditPlan.model_validate(data)
+
+    def _make_transcript(self):
+        return {
+            "text": "Orange text test",
+            "segments": [{
+                "id": 0, "start": 0.0, "end": 1.5,
+                "text": "Orange text test",
+                "words": [
+                    {"word": "Orange", "start": 0.0, "end": 0.3, "probability": 0.99},
+                    {"word": "text", "start": 0.35, "end": 0.6, "probability": 0.99},
+                    {"word": "test", "start": 0.65, "end": 0.9, "probability": 0.99},
+                ],
+            }],
+            "language": "en",
+        }
+
+    def test_orange_color_no_karaoke(self):
+        """Orange color without karaoke: PrimaryColour=orange, no \\k tags."""
+        plan = self._make_plan(style={"color": "orange"})
+        transcript = self._make_transcript()
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path = f.name
+        try:
+            generate_ass_subtitles(transcript, plan, path)
+            with open(path) as f:
+                content = f.read()
+            # #FF8800 => &H000088FF
+            self.assertIn("&H000088FF", content)
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            for d in dialogues:
+                self.assertNotIn("{\\k", d)
+                self.assertNotIn("{\\kf", d)
+        finally:
+            os.unlink(path)
+
+    def test_named_color_red_no_karaoke(self):
+        """Named color 'red' without karaoke: PrimaryColour=red, no \\k tags."""
+        plan = self._make_plan(style={"color": "red"})
+        transcript = self._make_transcript()
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path = f.name
+        try:
+            generate_ass_subtitles(transcript, plan, path)
+            with open(path) as f:
+                content = f.read()
+            # #FF0000 => &H000000FF
+            self.assertIn("&H000000FF", content)
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            for d in dialogues:
+                self.assertNotIn("{\\kf", d)
+        finally:
+            os.unlink(path)
+
+
+# ── Emphasis font heuristic tests ─────────────────────────────────────────
+
+class TestEmphasisFontHeuristic(unittest.TestCase):
+    """Verify pause-based emphasis and fallback every 8th chunk."""
+
+    def _make_plan(self, style=None):
+        data = {
+            "version": "1",
+            "preset_id": "snappy-creator",
+            "output": {"aspect_ratio": "9:16", "resolution": [1080, 1920], "max_duration_sec": 30},
+            "main_cuts": [{"start": 0.0, "end": 30.0}],
+            "punch_ins": [],
+            "broll": {"enabled": False, "strategy": "cutaway_fullscreen", "inserts": []},
+            "overlays": {"enabled": False, "items": []},
+            "captions": {
+                "enabled": True,
+                "style_id": "helvetica_punch",
+                "max_words_per_line": 3,
+                "max_lines": 1,
+            },
+            "music": {"enabled": False, "track_id": "upbeat-energy", "target_volume_db": -18.0},
+            "rationale": {"hook": "test", "structure": []},
+        }
+        if style is not None:
+            data["captions"]["style"] = style
+        return EditPlan.model_validate(data)
+
+    def _make_transcript_with_pause(self):
+        """Transcript where there's a big gap between word 3 and word 4."""
+        return {
+            "text": "One two three four five six",
+            "segments": [{
+                "id": 0, "start": 0.0, "end": 5.0,
+                "text": "One two three four five six",
+                "words": [
+                    {"word": "One", "start": 0.0, "end": 0.2, "probability": 0.99},
+                    {"word": "two", "start": 0.25, "end": 0.4, "probability": 0.99},
+                    {"word": "three", "start": 0.45, "end": 0.6, "probability": 0.99},
+                    # Big gap here (0.6 to 1.5 = 0.9s > 0.4s threshold)
+                    {"word": "four", "start": 1.5, "end": 1.7, "probability": 0.99},
+                    {"word": "five", "start": 1.75, "end": 1.9, "probability": 0.99},
+                    {"word": "six", "start": 1.95, "end": 2.1, "probability": 0.99},
+                ],
+            }],
+            "language": "en",
+        }
+
+    def _make_long_transcript(self, n_words=30):
+        """Generate a long transcript with evenly spaced words (no pauses)."""
+        words = []
+        for i in range(n_words):
+            t = i * 0.3
+            words.append({
+                "word": f"word{i}",
+                "start": t,
+                "end": t + 0.2,
+                "probability": 0.99,
+            })
+        return {
+            "text": " ".join(w["word"] for w in words),
+            "segments": [{
+                "id": 0,
+                "start": 0.0,
+                "end": words[-1]["end"],
+                "text": " ".join(w["word"] for w in words),
+                "words": words,
+            }],
+            "language": "en",
+        }
+
+    @patch("shutil.which", return_value=None)
+    def test_pause_triggers_emphasis(self, _mock):
+        """A pause >= threshold wraps last word of chunk with emphasis font."""
+        plan = self._make_plan(style={
+            "font_emphasis": "DejaVu Serif",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 0.4},
+        })
+        transcript = self._make_transcript_with_pause()
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path = f.name
+        try:
+            generate_ass_subtitles(transcript, plan, path)
+            with open(path) as f:
+                content = f.read()
+            # At least one dialogue should have emphasis font wrapping
+            self.assertIn("{\\fnDejaVu Serif}", content)
+        finally:
+            os.unlink(path)
+
+    @patch("shutil.which", return_value=None)
+    def test_emphasis_disabled_no_fn_tags(self, _mock):
+        """When emphasis is disabled, no \\fn tags appear in dialogue."""
+        plan = self._make_plan(style={
+            "font_emphasis": "DejaVu Serif",
+            "pause_emphasis": {"enabled": False},
+        })
+        transcript = self._make_transcript_with_pause()
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path = f.name
+        try:
+            generate_ass_subtitles(transcript, plan, path)
+            with open(path) as f:
+                content = f.read()
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            for d in dialogues:
+                text = d.split(",,", 1)[-1]
+                self.assertNotIn("{\\fnDejaVu Serif}", text)
+        finally:
+            os.unlink(path)
+
+    @patch("shutil.which", return_value=None)
+    @patch("random.choices", return_value=[1])  # force 1-word chunks for determinism
+    def test_fallback_every_8th_chunk(self, _mock_choices, _mock_which):
+        """Every 8th chunk gets emphasis even without a pause."""
+        plan = self._make_plan(style={
+            "font_emphasis": "DejaVu Serif",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 5.0},  # very high threshold
+        })
+        # 30 words, 1-word chunks => 30 chunks; 8th should have emphasis
+        transcript = self._make_long_transcript(n_words=30)
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path = f.name
+        try:
+            generate_ass_subtitles(transcript, plan, path)
+            with open(path) as f:
+                content = f.read()
+            # With 30 one-word chunks and threshold=5.0 (no natural pauses),
+            # chunks 8, 16, 24 should get emphasis
+            self.assertIn("{\\fnDejaVu Serif}", content)
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            emphasis_count = sum(1 for d in dialogues if "{\\fnDejaVu Serif}" in d)
+            self.assertGreaterEqual(emphasis_count, 1, "Expected at least one emphasis chunk via 8th fallback")
+        finally:
+            os.unlink(path)
+
+
+# ── Center position tests ─────────────────────────────────────────────────
+
+class TestCenterPosition(unittest.TestCase):
+    """Default Y position should be 960 (center screen for 1080x1920)."""
+
+    def _make_plan(self, style=None):
+        data = {
+            "version": "1",
+            "preset_id": "snappy-creator",
+            "output": {"aspect_ratio": "9:16", "resolution": [1080, 1920], "max_duration_sec": 30},
+            "main_cuts": [{"start": 0.0, "end": 10.0}],
+            "punch_ins": [],
+            "broll": {"enabled": False, "strategy": "cutaway_fullscreen", "inserts": []},
+            "overlays": {"enabled": False, "items": []},
+            "captions": {
+                "enabled": True,
+                "style_id": "helvetica_punch",
+                "max_words_per_line": 3,
+                "max_lines": 1,
+            },
+            "music": {"enabled": False, "track_id": "upbeat-energy", "target_volume_db": -18.0},
+            "rationale": {"hook": "test", "structure": []},
+        }
+        if style is not None:
+            data["captions"]["style"] = style
+        return EditPlan.model_validate(data)
+
+    def _make_transcript(self):
+        return {
+            "text": "Center test",
+            "segments": [{
+                "id": 0, "start": 0.0, "end": 1.0,
+                "text": "Center test",
+                "words": [
+                    {"word": "Center", "start": 0.0, "end": 0.3, "probability": 0.99},
+                    {"word": "test", "start": 0.35, "end": 0.6, "probability": 0.99},
+                ],
+            }],
+            "language": "en",
+        }
+
+    def test_default_y_960(self):
+        """Default Y should be 960 (center of 1920px screen)."""
+        plan = self._make_plan()
+        transcript = self._make_transcript()
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path = f.name
+        try:
+            generate_ass_subtitles(transcript, plan, path)
+            with open(path) as f:
+                content = f.read()
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            for d in dialogues:
+                text = d.split(",,", 1)[-1]
+                self.assertIn("\\pos(540,960)", text)
+        finally:
+            os.unlink(path)
+
+    def test_custom_y_overrides_default(self):
+        """Custom y=1400 overrides the default 960."""
+        plan = self._make_plan(style={"y": 1400})
+        transcript = self._make_transcript()
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path = f.name
+        try:
+            generate_ass_subtitles(transcript, plan, path)
+            with open(path) as f:
+                content = f.read()
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            for d in dialogues:
+                text = d.split(",,", 1)[-1]
+                self.assertIn("\\pos(540,1400)", text)
+        finally:
+            os.unlink(path)
+
+
+# ── Named color tests ────────────────────────────────────────────────────
+
+class TestNamedColors(unittest.TestCase):
+    """Verify named colors resolve correctly."""
+
+    def test_named_orange(self):
+        self.assertEqual(_hex_to_ass_color("orange"), "&H000088FF")
+
+    def test_named_red(self):
+        self.assertEqual(_hex_to_ass_color("red"), "&H000000FF")
+
+    def test_named_blue(self):
+        self.assertEqual(_hex_to_ass_color("blue"), "&H00FF6600")
+
+    def test_named_green(self):
+        self.assertEqual(_hex_to_ass_color("green"), "&H0000CC00")
+
+    def test_named_yellow(self):
+        self.assertEqual(_hex_to_ass_color("yellow"), "&H0000CCFF")
+
+    def test_named_white(self):
+        self.assertEqual(_hex_to_ass_color("white"), "&H00FFFFFF")
+
+    def test_named_black(self):
+        self.assertEqual(_hex_to_ass_color("black"), "&H00000000")
+
+    def test_named_case_insensitive(self):
+        self.assertEqual(_hex_to_ass_color("RED"), "&H000000FF")
+        self.assertEqual(_hex_to_ass_color("Orange"), "&H000088FF")
+
+    def test_unknown_name_returns_default(self):
+        self.assertEqual(_hex_to_ass_color("chartreuse"), "&H00FFFFFF")
+
+
+# ── Missing font fallback tests ──────────────────────────────────────────
+
+class TestMissingFontFallback(unittest.TestCase):
+    """Verify _resolve_font falls back safely for unknown fonts."""
+
+    @patch("shutil.which", return_value=None)
+    def test_unknown_font_returns_itself(self, _mock):
+        """Without fc-list, unknown font returns itself as best-effort."""
+        result = _resolve_font("TotallyFakeFont")
+        self.assertEqual(result, "TotallyFakeFont")
+
+    @patch("shutil.which", return_value=None)
+    def test_alias_sans_resolves(self, _mock):
+        result = _resolve_font("sans")
+        # Should resolve to first item in sans chain
+        self.assertEqual(result, "Liberation Sans")
+
+    @patch("shutil.which", return_value=None)
+    def test_alias_serif_resolves(self, _mock):
+        result = _resolve_font("serif")
+        self.assertEqual(result, "Playfair Display")
+
+    @patch("shutil.which", return_value=None)
+    def test_alias_mono_resolves(self, _mock):
+        result = _resolve_font("mono")
+        self.assertEqual(result, "Noto Mono")
+
+
+# ── Timing / broll / overlay invariance tests ─────────────────────────────
+
+class TestTimingInvariance(unittest.TestCase):
+    """Caption style changes must NOT alter timing or broll/overlay counts."""
+
+    def _make_plan(self, style=None, broll_inserts=None, overlay_items=None):
+        data = {
+            "version": "1",
+            "preset_id": "snappy-creator",
+            "output": {"aspect_ratio": "9:16", "resolution": [1080, 1920], "max_duration_sec": 30},
+            "main_cuts": [{"start": 0.0, "end": 5.0}],
+            "punch_ins": [],
+            "broll": {"enabled": bool(broll_inserts), "strategy": "cutaway_fullscreen",
+                       "inserts": broll_inserts or []},
+            "overlays": {"enabled": bool(overlay_items), "items": overlay_items or []},
+            "captions": {
+                "enabled": True,
+                "style_id": "helvetica_punch",
+                "max_words_per_line": 3,
+                "max_lines": 1,
+            },
+            "music": {"enabled": False, "track_id": "upbeat-energy", "target_volume_db": -18.0},
+            "rationale": {"hook": "test", "structure": []},
+        }
+        if style is not None:
+            data["captions"]["style"] = style
+        return EditPlan.model_validate(data)
+
+    def _make_transcript(self):
+        return {
+            "text": "Hello world",
+            "segments": [{
+                "id": 0, "start": 0.0, "end": 1.0,
+                "text": "Hello world",
+                "words": [
+                    {"word": "Hello", "start": 0.0, "end": 0.3, "probability": 0.99},
+                    {"word": "world", "start": 0.35, "end": 0.6, "probability": 0.99},
+                ],
+            }],
+            "language": "en",
+        }
+
+    def test_style_change_preserves_timing(self):
+        """Changing caption style should not alter Dialogue start/end times."""
+        transcript = self._make_transcript()
+        # Generate with default style
+        plan1 = self._make_plan()
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path1 = f.name
+        # Generate with custom style
+        plan2 = self._make_plan(style={"color": "orange", "size": 80, "y": 1400})
+        with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
+            path2 = f.name
+        try:
+            generate_ass_subtitles(transcript, plan1, path1)
+            generate_ass_subtitles(transcript, plan2, path2)
+            with open(path1) as f:
+                content1 = f.read()
+            with open(path2) as f:
+                content2 = f.read()
+            dialogues1 = [l for l in content1.splitlines() if l.startswith("Dialogue:")]
+            dialogues2 = [l for l in content2.splitlines() if l.startswith("Dialogue:")]
+            # Same number of dialogue lines
+            self.assertEqual(len(dialogues1), len(dialogues2))
+            # Same start/end times
+            for d1, d2 in zip(dialogues1, dialogues2):
+                parts1 = d1.split(",")
+                parts2 = d2.split(",")
+                # Start time is field 1, End time is field 2
+                self.assertEqual(parts1[1], parts2[1], "Start times must match")
+                self.assertEqual(parts1[2], parts2[2], "End times must match")
+        finally:
+            os.unlink(path1)
+            os.unlink(path2)
+
+    def test_broll_count_unchanged_by_style(self):
+        """Broll inserts in the plan are not modified by caption style changes."""
+        plan = self._make_plan(
+            style={"color": "red", "size": 72},
+            broll_inserts=[{"query": "nature", "start": 1.0, "end": 2.0}],
+        )
+        self.assertEqual(len(plan.broll.inserts), 1)
+        self.assertEqual(plan.broll.inserts[0].query, "nature")
+
+    def test_overlay_count_unchanged_by_style(self):
+        """Overlay items in the plan are not modified by caption style changes."""
+        plan = self._make_plan(
+            style={"color": "blue", "bold": True},
+            overlay_items=[{"type": "image_overlay", "start": 0.0, "end": 1.0}],
+        )
+        self.assertEqual(len(plan.overlays.items), 1)
 
 
 if __name__ == "__main__":

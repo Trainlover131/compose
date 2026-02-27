@@ -174,7 +174,7 @@ class TestHelveticaPunchASS(unittest.TestCase):
             # Every Dialogue must have fixed \pos and \an5 — no karaoke tags
             for d in dialogues:
                 text = d.split(",,", 1)[-1]
-                self.assertIn("{\\an5\\pos(540,1180)}", text)
+                self.assertIn("{\\an5\\pos(540,960)}", text)
                 self.assertNotIn("{\\k", text)
                 self.assertNotIn("{\\an2}", text)
                 # No line breaks
@@ -209,7 +209,7 @@ class TestHelveticaPunchASS(unittest.TestCase):
             d = dialogues[0]
             text = d.split(",,", 1)[-1]
             # Fixed pos, no karaoke
-            self.assertIn("{\\an5\\pos(540,1180)}", text)
+            self.assertIn("{\\an5\\pos(540,960)}", text)
             self.assertNotIn("{\\k", text)
             self.assertIn("Hello", text)
             # Start should be 0:00:00.50 (0.5s)
@@ -236,7 +236,7 @@ class TestHelveticaPunchASS(unittest.TestCase):
             self.assertGreater(len(dialogues), 0)
             for d in dialogues:
                 text = d.split(",,", 1)[-1]
-                self.assertIn("{\\an5\\pos(540,1180)}", text)
+                self.assertIn("{\\an5\\pos(540,960)}", text)
                 self.assertNotIn("{\\k", text)
                 self.assertNotIn("\\N", text)
         finally:
