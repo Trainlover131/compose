@@ -1638,17 +1638,26 @@ def compile_render(
             )
 
             if _invert_on:
-                # Generate black canvas, burn invert-mask ASS, blend with difference
+                if _inv_scope == "emphasis":
+                    # Emphasis-only invert: burn normal captions FIRST, then
+                    # apply difference blend ON TOP so the inverted emphasis
+                    # word is visible above the regular caption text.
+                    filters.append(
+                        f"{last_label}ass={ass_path}:fontsdir=/usr/share/fonts[_cap_pre_inv]"
+                    )
+                    last_label = "[_cap_pre_inv]"
+
+                # Generate black canvas directly in rgb24 to avoid YUV TV-range
+                # (Y=16) conversion mismatch that causes a green tint.  Burn
+                # the invert-mask ASS on the rgb24 canvas so the "black" pixels
+                # are guaranteed to be exact RGB(0,0,0).
                 filters.append(
-                    f"color=black:s=1080x1920:r=30:d={_total_dur:.3f}[_inv_black]"
+                    f"color=black:s=1080x1920:r=30:d={_total_dur:.3f},format=rgb24[_inv_black]"
                 )
                 filters.append(
                     f"[_inv_black]ass={inv_ass_path}:fontsdir=/usr/share/fonts[_inv_text]"
                 )
-                # Force both inputs to rgb24 (no alpha) before blend.
-                # blend=all_mode=difference on RGBA zeroes out alpha (|255-255|=0)
-                # which causes a green tint when encoded to H264. rgb24 has no
-                # alpha channel, so difference only operates on R,G,B.
+                # Both inputs in rgb24 — no alpha channel, no range ambiguity.
                 filters.append(f"{last_label}format=rgb24[_inv_base_rgb]")
                 filters.append(f"[_inv_text]format=rgb24[_inv_mask_rgb]")
                 inv_blend_out = "_inv_blended"
@@ -1657,19 +1666,12 @@ def compile_render(
                 )
                 last_label = f"[{inv_blend_out}]"
 
-                # Explicit RGB→YUV conversion after blend to prevent
-                # green tint from FFmpeg's auto-inserted colorspace guess.
+                # Convert back to yuv420p for the encoder.
                 filters.append(f"{last_label}format=yuv420p[_inv_yuv]")
                 last_label = "[_inv_yuv]"
 
-                if _inv_scope == "emphasis":
-                    # Emphasis-only invert: also apply normal captions on top
-                    cap_out = "vcap"
-                    filters.append(
-                        f"{last_label}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]"
-                    )
-                    last_label = f"[{cap_out}]"
                 # scope="all": normal captions NOT applied (difference blend replaces them)
+                # scope="emphasis": captions already burned above before the blend
             else:
                 cap_out = "vcap"
                 filters.append(f"{last_label}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]")
@@ -1823,19 +1825,21 @@ def compile_render(
                     else "all"
                 )
                 if _invert_on_r:
-                    filters_retry.append(f"color=black:s=1080x1920:r=30:d={_total_dur:.3f}[_inv_black_r]")
+                    if _inv_scope_r == "emphasis":
+                        # Emphasis-only: burn normal captions FIRST, then blend ON TOP
+                        filters_retry.append(
+                            f"{last_label_retry}ass={ass_path}:fontsdir=/usr/share/fonts[_cap_pre_inv_r]"
+                        )
+                        last_label_retry = "[_cap_pre_inv_r]"
+
+                    # Black canvas in rgb24 to avoid YUV TV-range green tint
+                    filters_retry.append(f"color=black:s=1080x1920:r=30:d={_total_dur:.3f},format=rgb24[_inv_black_r]")
                     filters_retry.append(f"[_inv_black_r]ass={inv_ass_path}:fontsdir=/usr/share/fonts[_inv_text_r]")
-                    # Force both inputs to rgb24 (no alpha) before blend — see primary path comment
                     filters_retry.append(f"{last_label_retry}format=rgb24[_inv_base_rgb_r]")
                     filters_retry.append(f"[_inv_text_r]format=rgb24[_inv_mask_rgb_r]")
                     filters_retry.append(f"[_inv_base_rgb_r][_inv_mask_rgb_r]blend=all_mode=difference:shortest=1[_inv_blended_r]")
-                    # Explicit RGB→YUV conversion after blend (same fix as primary path)
                     filters_retry.append("[_inv_blended_r]format=yuv420p[_inv_yuv_r]")
                     last_label_retry = "[_inv_yuv_r]"
-                    if _inv_scope_r == "emphasis":
-                        cap_out = "vcap"
-                        filters_retry.append(f"{last_label_retry}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]")
-                        last_label_retry = f"[{cap_out}]"
                 else:
                     cap_out = "vcap"
                     filters_retry.append(f"{last_label_retry}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]")
