@@ -766,14 +766,14 @@ class TestInvertFiltergraphBounded(unittest.TestCase):
     @patch("shutil.which", return_value=None)
     @patch("random.choices", return_value=[2])
     def test_primary_fc_has_format_rgb24_before_blend(self, _mock_choices, _mock_which):
-        """When invert=true, format=rgb24 must appear exactly twice before blend."""
+        """When invert=true, format=rgb24 with setparams=range=pc must appear before blend."""
         fc, _ = self._run_compile_and_get_fc(
             style={"invert": True, "invert_scope": "all"},
         )
         self.assertIsNotNone(fc)
-        # Both inputs must be format=rgb24 before the blend
-        self.assertIn("format=rgb24[_inv_base_rgb]", fc)
-        self.assertIn("format=rgb24[_inv_mask_rgb]", fc)
+        # Both inputs must be rgb24 with full-range declaration before the blend
+        self.assertIn("format=rgb24,setparams=range=pc[_inv_base_rgb]", fc)
+        self.assertIn("setparams=range=pc[_inv_mask_rgb]", fc)
         # The blend must reference the rgb24 labels
         self.assertIn("[_inv_base_rgb][_inv_mask_rgb]blend=all_mode=difference:shortest=1", fc)
 
@@ -831,8 +831,8 @@ class TestInvertFiltergraphBounded(unittest.TestCase):
             self.assertTrue(os.path.exists(fc_retry_path))
             with open(fc_retry_path) as f:
                 fc_retry = f.read()
-            self.assertIn("format=rgb24[_inv_base_rgb_r]", fc_retry)
-            self.assertIn("format=rgb24[_inv_mask_rgb_r]", fc_retry)
+            self.assertIn("format=rgb24,setparams=range=pc[_inv_base_rgb_r]", fc_retry)
+            self.assertIn("setparams=range=pc[_inv_mask_rgb_r]", fc_retry)
             self.assertIn("[_inv_base_rgb_r][_inv_mask_rgb_r]blend=all_mode=difference:shortest=1", fc_retry)
 
 
