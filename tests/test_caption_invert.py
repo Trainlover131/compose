@@ -1,0 +1,558 @@
+"""Unit tests for negative / invert captions and emphasis size normalization."""
+
+import os
+import re
+import tempfile
+import unittest
+from unittest.mock import patch
+
+os.environ.setdefault("ANTHROPIC_API_KEY", "")
+
+from apps.api.models.schemas import (
+    CaptionConfig,
+    CaptionStyle,
+    EditPlan,
+)
+from apps.api.services.render_compiler import generate_ass_subtitles
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────
+
+def _make_plan(style=None, style_id="helvetica_punch"):
+    data = {
+        "version": "1",
+        "preset_id": "snappy-creator",
+        "output": {"aspect_ratio": "9:16", "resolution": [1080, 1920], "max_duration_sec": 30},
+        "main_cuts": [{"start": 0.0, "end": 10.0}],
+        "punch_ins": [],
+        "broll": {"enabled": False, "strategy": "cutaway_fullscreen", "inserts": []},
+        "overlays": {"enabled": False, "items": []},
+        "captions": {
+            "enabled": True,
+            "style_id": style_id,
+            "max_words_per_line": 3,
+            "max_lines": 1,
+        },
+        "music": {"enabled": False, "track_id": "upbeat-energy", "target_volume_db": -18.0},
+        "rationale": {"hook": "test", "structure": []},
+    }
+    if style is not None:
+        data["captions"]["style"] = style
+    return EditPlan.model_validate(data)
+
+
+def _make_transcript():
+    return {
+        "text": "Hello world test again more words here now",
+        "segments": [{
+            "id": 0, "start": 0.0, "end": 3.0,
+            "text": "Hello world test again more words here now",
+            "words": [
+                {"word": "Hello", "start": 0.0, "end": 0.2, "probability": 0.99},
+                {"word": "world", "start": 0.25, "end": 0.4, "probability": 0.99},
+                {"word": "test", "start": 0.45, "end": 0.6, "probability": 0.99},
+                {"word": "again", "start": 0.65, "end": 0.8, "probability": 0.99},
+                {"word": "more", "start": 0.85, "end": 1.0, "probability": 0.99},
+                {"word": "words", "start": 1.05, "end": 1.2, "probability": 0.99},
+                {"word": "here", "start": 1.25, "end": 1.4, "probability": 0.99},
+                {"word": "now", "start": 1.45, "end": 1.6, "probability": 0.99},
+            ],
+        }],
+        "language": "en",
+    }
+
+
+def _make_transcript_with_pause():
+    """Transcript where there's a big gap between word 3 and word 4."""
+    return {
+        "text": "One two three four five six",
+        "segments": [{
+            "id": 0, "start": 0.0, "end": 5.0,
+            "text": "One two three four five six",
+            "words": [
+                {"word": "One", "start": 0.0, "end": 0.2, "probability": 0.99},
+                {"word": "two", "start": 0.25, "end": 0.4, "probability": 0.99},
+                {"word": "three", "start": 0.45, "end": 0.6, "probability": 0.99},
+                # Big gap here (0.6 to 1.5 = 0.9s > 0.4s threshold)
+                {"word": "four", "start": 1.5, "end": 1.7, "probability": 0.99},
+                {"word": "five", "start": 1.75, "end": 1.9, "probability": 0.99},
+                {"word": "six", "start": 1.95, "end": 2.1, "probability": 0.99},
+            ],
+        }],
+        "language": "en",
+    }
+
+
+# ── Schema tests ─────────────────────────────────────────────────────────
+
+class TestInvertSchema(unittest.TestCase):
+    """Verify invert and emphasis_size_multiplier fields parse correctly."""
+
+    def test_invert_fields_default_none(self):
+        cs = CaptionStyle()
+        self.assertIsNone(cs.invert)
+        self.assertIsNone(cs.invert_scope)
+        self.assertIsNone(cs.emphasis_size_multiplier)
+
+    def test_invert_all(self):
+        cs = CaptionStyle.model_validate({
+            "invert": True,
+            "invert_scope": "all",
+        })
+        self.assertTrue(cs.invert)
+        self.assertEqual(cs.invert_scope, "all")
+
+    def test_invert_emphasis(self):
+        cs = CaptionStyle.model_validate({
+            "invert": True,
+            "invert_scope": "emphasis",
+        })
+        self.assertTrue(cs.invert)
+        self.assertEqual(cs.invert_scope, "emphasis")
+
+    def test_emphasis_size_multiplier(self):
+        cs = CaptionStyle.model_validate({
+            "emphasis_size_multiplier": 1.25,
+        })
+        self.assertEqual(cs.emphasis_size_multiplier, 1.25)
+
+    def test_backward_compat_no_invert(self):
+        """Old plans without invert fields still parse."""
+        cfg = CaptionConfig.model_validate({
+            "enabled": True,
+            "style_id": "helvetica_punch",
+            "max_words_per_line": 3,
+            "max_lines": 1,
+            "style": {"color": "#FF0000"},
+        })
+        self.assertIsNone(cfg.style.invert)
+        self.assertIsNone(cfg.style.invert_scope)
+
+
+# ── Invert=false baseline tests ──────────────────────────────────────────
+
+class TestInvertFalseBaseline(unittest.TestCase):
+    """When invert is false/absent, no invert ASS file is generated."""
+
+    def test_no_invert_file_when_not_set(self):
+        plan = _make_plan()
+        transcript = _make_transcript()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            self.assertTrue(os.path.exists(ass_path))
+            self.assertFalse(os.path.exists(inv_path))
+
+    def test_no_invert_file_when_false(self):
+        plan = _make_plan(style={"invert": False})
+        transcript = _make_transcript()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            self.assertTrue(os.path.exists(ass_path))
+            self.assertFalse(os.path.exists(inv_path))
+
+    def test_no_blend_filter_when_invert_false(self):
+        """When invert=false, the filtergraph must NOT contain blend=all_mode=difference."""
+        plan = _make_plan()
+        transcript = _make_transcript()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(ass_path) as f:
+                content = f.read()
+            # No blend references in ASS file (that's in FFmpeg, not ASS, but
+            # verify the ASS file itself is normal)
+            self.assertNotIn("captions_invert", content)
+
+
+# ── Invert scope="all" tests ─────────────────────────────────────────────
+
+class TestInvertScopeAll(unittest.TestCase):
+    """When invert=true, invert_scope=all, a full invert ASS is generated."""
+
+    def test_invert_all_generates_file(self):
+        plan = _make_plan(style={"invert": True, "invert_scope": "all"})
+        transcript = _make_transcript()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            self.assertTrue(os.path.exists(inv_path), "captions_invert.ass should exist")
+
+    def test_invert_all_same_dialogue_count(self):
+        """Invert scope=all should have same number of Dialogue lines as main."""
+        plan = _make_plan(style={"invert": True, "invert_scope": "all"})
+        transcript = _make_transcript()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(ass_path) as f:
+                main_lines = [l for l in f.read().splitlines() if l.startswith("Dialogue:")]
+            with open(inv_path) as f:
+                inv_lines = [l for l in f.read().splitlines() if l.startswith("Dialogue:")]
+            self.assertEqual(len(main_lines), len(inv_lines))
+
+    def test_invert_all_white_only_style(self):
+        """Invert ASS should have white PrimaryColour, no outline, no shadow."""
+        plan = _make_plan(style={"invert": True, "invert_scope": "all"})
+        transcript = _make_transcript()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(inv_path) as f:
+                content = f.read()
+            style_line = [l for l in content.splitlines() if l.startswith("Style:")][0]
+            # PrimaryColour should be white
+            self.assertIn("&H00FFFFFF", style_line)
+            # Outline=0, Shadow=0 (check the relevant position)
+            # Format: ...,Outline,Shadow,...
+            parts = style_line.split(",")
+            # Outline is field 16, Shadow is field 17 (0-indexed)
+            self.assertEqual(parts[16], "0", "Outline should be 0 in invert ASS")
+            self.assertEqual(parts[17], "0", "Shadow should be 0 in invert ASS")
+
+    def test_invert_all_no_karaoke_tags(self):
+        """Invert ASS should NOT contain karaoke tags even when main does."""
+        plan = _make_plan(style={
+            "invert": True, "invert_scope": "all",
+            "karaoke": {"enabled": True, "color": "#FF8800"},
+        })
+        transcript = _make_transcript()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(inv_path) as f:
+                content = f.read()
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            for d in dialogues:
+                self.assertNotIn("\\kf", d, "Invert ASS must not have karaoke tags")
+                self.assertNotIn("\\k", d.split(",,", 1)[-1].replace("\\kf", ""),
+                                 "Invert ASS must not have karaoke tags")
+
+    def test_invert_all_no_emphasis_font_tags(self):
+        """Invert ASS should NOT contain emphasis font changes."""
+        plan = _make_plan(style={
+            "invert": True, "invert_scope": "all",
+            "font_emphasis": "DejaVu Serif",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 0.2},
+        })
+        transcript = _make_transcript_with_pause()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(inv_path) as f:
+                content = f.read()
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            for d in dialogues:
+                text = d.split(",,", 1)[-1]
+                self.assertNotIn("{\\fn", text, "Invert ASS must not have font changes")
+
+    def test_invert_all_same_timing(self):
+        """Timing between main and invert ASS must be identical."""
+        plan = _make_plan(style={"invert": True, "invert_scope": "all"})
+        transcript = _make_transcript()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(ass_path) as f:
+                main_lines = [l for l in f.read().splitlines() if l.startswith("Dialogue:")]
+            with open(inv_path) as f:
+                inv_lines = [l for l in f.read().splitlines() if l.startswith("Dialogue:")]
+            for m, i in zip(main_lines, inv_lines):
+                m_parts = m.split(",")
+                i_parts = i.split(",")
+                self.assertEqual(m_parts[1], i_parts[1], "Start times must match")
+                self.assertEqual(m_parts[2], i_parts[2], "End times must match")
+
+    def test_invert_all_same_position(self):
+        """Position (\\an and \\pos) must match between main and invert ASS."""
+        plan = _make_plan(style={"invert": True, "invert_scope": "all"})
+        transcript = _make_transcript()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(ass_path) as f:
+                main_lines = [l for l in f.read().splitlines() if l.startswith("Dialogue:")]
+            with open(inv_path) as f:
+                inv_lines = [l for l in f.read().splitlines() if l.startswith("Dialogue:")]
+            for m, inv in zip(main_lines, inv_lines):
+                m_text = m.split(",,", 1)[-1]
+                i_text = inv.split(",,", 1)[-1]
+                # Extract \an and \pos from both
+                m_pos = re.search(r"\\an\d+\\pos\(\d+,\d+\)", m_text)
+                i_pos = re.search(r"\\an\d+\\pos\(\d+,\d+\)", i_text)
+                self.assertIsNotNone(m_pos)
+                self.assertIsNotNone(i_pos)
+                self.assertEqual(m_pos.group(), i_pos.group())
+
+    def test_invert_all_same_resolution(self):
+        """PlayResX/PlayResY must match between main and invert ASS."""
+        plan = _make_plan(style={"invert": True, "invert_scope": "all"})
+        transcript = _make_transcript()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(ass_path) as f:
+                main_content = f.read()
+            with open(inv_path) as f:
+                inv_content = f.read()
+            self.assertIn("PlayResX: 1080", main_content)
+            self.assertIn("PlayResY: 1920", main_content)
+            self.assertIn("PlayResX: 1080", inv_content)
+            self.assertIn("PlayResY: 1920", inv_content)
+
+
+# ── Invert scope="emphasis" tests ────────────────────────────────────────
+
+class TestInvertScopeEmphasis(unittest.TestCase):
+    """When invert_scope=emphasis, only emphasized words go into invert ASS."""
+
+    @patch("shutil.which", return_value=None)
+    def test_emphasis_fewer_dialogues(self, _mock):
+        """Invert ASS with emphasis-only scope has fewer lines than main."""
+        plan = _make_plan(style={
+            "invert": True,
+            "invert_scope": "emphasis",
+            "font_emphasis": "DejaVu Serif",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 0.2},
+        })
+        transcript = _make_transcript_with_pause()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            self.assertTrue(os.path.exists(inv_path))
+            with open(ass_path) as f:
+                main_lines = [l for l in f.read().splitlines() if l.startswith("Dialogue:")]
+            with open(inv_path) as f:
+                inv_lines = [l for l in f.read().splitlines() if l.startswith("Dialogue:")]
+            self.assertGreater(len(main_lines), len(inv_lines),
+                               "Emphasis-only invert should have fewer Dialogue lines")
+
+    @patch("shutil.which", return_value=None)
+    def test_emphasis_invert_white_only(self, _mock):
+        """Emphasis-only invert ASS should have white style, no outline/shadow."""
+        plan = _make_plan(style={
+            "invert": True,
+            "invert_scope": "emphasis",
+            "font_emphasis": "DejaVu Serif",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 0.2},
+        })
+        transcript = _make_transcript_with_pause()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(inv_path) as f:
+                content = f.read()
+            style_line = [l for l in content.splitlines() if l.startswith("Style:")][0]
+            self.assertIn("&H00FFFFFF", style_line)
+
+    @patch("shutil.which", return_value=None)
+    def test_emphasis_invert_no_karaoke(self, _mock):
+        """Emphasis-only invert must have no karaoke tags."""
+        plan = _make_plan(style={
+            "invert": True,
+            "invert_scope": "emphasis",
+            "font_emphasis": "DejaVu Serif",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 0.2},
+            "karaoke": {"enabled": True, "color": "#FF0000"},
+        })
+        transcript = _make_transcript_with_pause()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(inv_path) as f:
+                content = f.read()
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            for d in dialogues:
+                self.assertNotIn("\\kf", d)
+
+
+# ── Emphasis size normalization tests ────────────────────────────────────
+
+class TestEmphasisSizeNormalization(unittest.TestCase):
+    """Verify emphasis font gets size bump for serif/script fonts."""
+
+    @patch("shutil.which", return_value=None)
+    def test_serif_emphasis_gets_size_bump(self, _mock):
+        """DejaVu Serif emphasis should get \\fs tag with 1.12x multiplier."""
+        plan = _make_plan(style={
+            "font_emphasis": "DejaVu Serif",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 0.2},
+        })
+        transcript = _make_transcript_with_pause()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(ass_path) as f:
+                content = f.read()
+            # base fontsize is 64, 64 * 1.12 = 71.68 -> round to 72
+            self.assertIn("{\\fs72\\fnDejaVu Serif}", content)
+            # Should also have reset tag
+            self.assertIn("{\\fs64\\fn", content)
+
+    @patch("shutil.which", return_value=None)
+    def test_sans_emphasis_no_size_bump(self, _mock):
+        """Sans emphasis font should NOT get size bump by default."""
+        plan = _make_plan(style={
+            "font_emphasis": "Liberation Sans",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 0.2},
+        })
+        transcript = _make_transcript_with_pause()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(ass_path) as f:
+                content = f.read()
+            # No \fs tag because sans fonts don't get the bump
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            has_fs = any("\\fs" in d.split(",,", 1)[-1] for d in dialogues)
+            self.assertFalse(has_fs, "Sans emphasis should not get \\fs size tag")
+
+    @patch("shutil.which", return_value=None)
+    def test_custom_multiplier_overrides(self, _mock):
+        """User-specified emphasis_size_multiplier should override default."""
+        plan = _make_plan(style={
+            "font_emphasis": "Liberation Sans",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 0.2},
+            "emphasis_size_multiplier": 1.25,
+        })
+        transcript = _make_transcript_with_pause()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(ass_path) as f:
+                content = f.read()
+            # 64 * 1.25 = 80
+            self.assertIn("{\\fs80\\fnLiberation Sans}", content)
+
+    @patch("shutil.which", return_value=None)
+    def test_multiplier_clamped_high(self, _mock):
+        """Multiplier above 1.35 should be clamped to 1.35."""
+        plan = _make_plan(style={
+            "font_emphasis": "Liberation Sans",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 0.2},
+            "emphasis_size_multiplier": 2.0,
+        })
+        transcript = _make_transcript_with_pause()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(ass_path) as f:
+                content = f.read()
+            # 64 * 1.35 = 86.4 -> 86
+            self.assertIn("{\\fs86\\fnLiberation Sans}", content)
+
+    @patch("shutil.which", return_value=None)
+    def test_invert_ignores_emphasis_sizing(self, _mock):
+        """captions_invert.ass must NOT have emphasis sizing (constant white glyphs)."""
+        plan = _make_plan(style={
+            "invert": True,
+            "invert_scope": "all",
+            "font_emphasis": "DejaVu Serif",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 0.2},
+        })
+        transcript = _make_transcript_with_pause()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(inv_path) as f:
+                content = f.read()
+            dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
+            for d in dialogues:
+                text = d.split(",,", 1)[-1]
+                self.assertNotIn("\\fs", text, "Invert ASS must not have \\fs tags")
+
+
+# ── Overlay / B-roll / timing invariance ─────────────────────────────────
+
+class TestInvertInvariance(unittest.TestCase):
+    """Invert must not change timing, overlay, or broll counts."""
+
+    @patch("random.choices", return_value=[2])
+    def test_timing_unchanged_with_invert(self, _mock_choices):
+        """Dialogue start/end times must be identical with or without invert."""
+        transcript = _make_transcript()
+        plan_normal = _make_plan()
+        plan_invert = _make_plan(style={"invert": True, "invert_scope": "all"})
+        with tempfile.TemporaryDirectory() as td:
+            path_n = os.path.join(td, "normal_captions.ass")
+            path_i = os.path.join(td, "invert_captions.ass")
+            generate_ass_subtitles(transcript, plan_normal, path_n)
+            generate_ass_subtitles(transcript, plan_invert, path_i)
+            with open(path_n) as f:
+                normal_d = [l for l in f.read().splitlines() if l.startswith("Dialogue:")]
+            with open(path_i) as f:
+                invert_d = [l for l in f.read().splitlines() if l.startswith("Dialogue:")]
+            self.assertEqual(len(normal_d), len(invert_d))
+            for n, i in zip(normal_d, invert_d):
+                n_parts = n.split(",")
+                i_parts = i.split(",")
+                self.assertEqual(n_parts[1], i_parts[1], "Start times must match")
+                self.assertEqual(n_parts[2], i_parts[2], "End times must match")
+
+    def test_broll_count_unchanged(self):
+        """Broll inserts in the plan are not modified by invert setting."""
+        data = {
+            "version": "1",
+            "preset_id": "snappy-creator",
+            "output": {"aspect_ratio": "9:16", "resolution": [1080, 1920], "max_duration_sec": 30},
+            "main_cuts": [{"start": 0.0, "end": 10.0}],
+            "punch_ins": [],
+            "broll": {"enabled": True, "strategy": "cutaway_fullscreen",
+                      "inserts": [{"query": "nature", "start": 1.0, "end": 2.0}]},
+            "overlays": {"enabled": False, "items": []},
+            "captions": {
+                "enabled": True,
+                "style_id": "helvetica_punch",
+                "max_words_per_line": 3,
+                "max_lines": 1,
+                "style": {"invert": True, "invert_scope": "all"},
+            },
+            "music": {"enabled": False, "track_id": "upbeat-energy", "target_volume_db": -18.0},
+            "rationale": {"hook": "test", "structure": []},
+        }
+        plan = EditPlan.model_validate(data)
+        self.assertEqual(len(plan.broll.inserts), 1)
+
+    def test_overlay_count_unchanged(self):
+        """Overlay items in the plan are not modified by invert setting."""
+        data = {
+            "version": "1",
+            "preset_id": "snappy-creator",
+            "output": {"aspect_ratio": "9:16", "resolution": [1080, 1920], "max_duration_sec": 30},
+            "main_cuts": [{"start": 0.0, "end": 10.0}],
+            "punch_ins": [],
+            "broll": {"enabled": False, "strategy": "cutaway_fullscreen", "inserts": []},
+            "overlays": {"enabled": True, "items": [
+                {"type": "image_overlay", "start": 0.5, "end": 1.5}
+            ]},
+            "captions": {
+                "enabled": True,
+                "style_id": "helvetica_punch",
+                "max_words_per_line": 3,
+                "max_lines": 1,
+                "style": {"invert": True, "invert_scope": "emphasis"},
+            },
+            "music": {"enabled": False, "track_id": "upbeat-energy", "target_volume_db": -18.0},
+            "rationale": {"hook": "test", "structure": []},
+        }
+        plan = EditPlan.model_validate(data)
+        self.assertEqual(len(plan.overlays.items), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

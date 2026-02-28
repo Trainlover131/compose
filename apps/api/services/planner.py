@@ -111,6 +111,13 @@ PLANNER_SYSTEM_PROMPT = (
     "highlight color. Do NOT set captions.style.color to the karaoke "
     "color; that changes the base text color. The base text stays white "
     "unless the user explicitly asks to change the caption base color.\n"
+    "   INVERT / NEGATIVE CAPTION RULES — If the user asks for "
+    "\"negative captions\", \"inverted captions\", \"difference captions\", "
+    "or \"blend mode difference captions\", set invert=true and "
+    "invert_scope=\"all\". If the user asks for \"negative on emphasis\", "
+    "\"invert only emphasized words\", or \"negative emphasis captions\", "
+    "set invert=true and invert_scope=\"emphasis\". Otherwise leave both "
+    "null (existing behavior unchanged).\n"
     "8. The rationale should briefly explain the editing strategy.\n"
     "9. Set broll.enabled=false and broll.inserts=[] (b-roll is handled "
     "separately).\n"
@@ -183,7 +190,10 @@ EDIT_PLAN_SCHEMA = """{
       "y": "<int 900-1700 or null>",
       "align": "<int 1-9 or null>",
       "karaoke": { "enabled": "<bool or null>", "color": "<#RRGGBB or null>" },
-      "pause_emphasis": { "enabled": "<bool or null>", "threshold_sec": "<float or null>" }
+      "pause_emphasis": { "enabled": "<bool or null>", "threshold_sec": "<float or null>" },
+      "invert": "<bool or null>",
+      "invert_scope": "<\"all\" | \"emphasis\" | null>",
+      "emphasis_size_multiplier": "<float 1.00-1.35 or null>"
     }
   },
   "music": {
