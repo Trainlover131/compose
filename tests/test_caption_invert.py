@@ -196,25 +196,34 @@ class TestInvertScopeAll(unittest.TestCase):
                 inv_lines = [l for l in f.read().splitlines() if l.startswith("Dialogue:")]
             self.assertEqual(len(main_lines), len(inv_lines))
 
-    def test_invert_all_white_only_style(self):
-        """Invert ASS should have white PrimaryColour, no outline, no shadow."""
+    def test_invert_all_white_primary_and_layout_matches_main(self):
+        """Invert ASS should have white PrimaryColour and layout-identical Style to main."""
         plan = _make_plan(style={"invert": True, "invert_scope": "all"})
         transcript = _make_transcript()
         with tempfile.TemporaryDirectory() as td:
             ass_path = os.path.join(td, "captions.ass")
             inv_path = os.path.join(td, "captions_invert.ass")
             generate_ass_subtitles(transcript, plan, ass_path)
+            with open(ass_path) as f:
+                main_content = f.read()
             with open(inv_path) as f:
-                content = f.read()
-            style_line = [l for l in content.splitlines() if l.startswith("Style:")][0]
-            # PrimaryColour should be white
-            self.assertIn("&H00FFFFFF", style_line)
-            # Outline=0, Shadow=0 (check the relevant position)
-            # Format: ...,Outline,Shadow,...
-            parts = style_line.split(",")
-            # Outline is field 16, Shadow is field 17 (0-indexed)
-            self.assertEqual(parts[16], "0", "Outline should be 0 in invert ASS")
-            self.assertEqual(parts[17], "0", "Shadow should be 0 in invert ASS")
+                inv_content = f.read()
+            main_style = [l for l in main_content.splitlines() if l.startswith("Style:")][0]
+            inv_style = [l for l in inv_content.splitlines() if l.startswith("Style:")][0]
+            # PrimaryColour should be white in invert
+            self.assertIn("&H00FFFFFF", inv_style)
+            # Parse both Style lines into fields
+            main_parts = main_style.split(",")
+            inv_parts = inv_style.split(",")
+            # These layout fields must match exactly between main and invert:
+            # Fontname(1), Fontsize(2), Bold(7), Italic(8), ScaleX(12), ScaleY(13),
+            # Spacing(14), Angle(15), BorderStyle(16_literal), Outline(16), Shadow(17),
+            # Alignment(18), MarginL(19), MarginR(20), MarginV(21), Encoding(22)
+            for idx in (1, 2, 7, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22):
+                self.assertEqual(
+                    main_parts[idx], inv_parts[idx],
+                    f"Style field {idx} must match: main={main_parts[idx]!r} inv={inv_parts[idx]!r}",
+                )
 
     def test_invert_all_no_karaoke_tags(self):
         """Invert ASS should NOT contain karaoke tags even when main does."""
@@ -752,6 +761,134 @@ class TestInvertFiltergraphBounded(unittest.TestCase):
         self.assertIsNotNone(fc)
         self.assertNotIn("color=black", fc)
         self.assertNotIn("blend=all_mode=difference", fc)
+        self.assertNotIn("format=rgba", fc)
+
+    @patch("shutil.which", return_value=None)
+    @patch("random.choices", return_value=[2])
+    def test_primary_fc_has_format_rgba_before_blend(self, _mock_choices, _mock_which):
+        """When invert=true, format=rgba must appear exactly twice before blend."""
+        fc, _ = self._run_compile_and_get_fc(
+            style={"invert": True, "invert_scope": "all"},
+        )
+        self.assertIsNotNone(fc)
+        # Both inputs must be format=rgba before the blend
+        self.assertIn("format=rgba[_inv_base_rgba]", fc)
+        self.assertIn("format=rgba[_inv_mask_rgba]", fc)
+        # The blend must reference the rgba labels
+        self.assertIn("[_inv_base_rgba][_inv_mask_rgba]blend=all_mode=difference:shortest=1", fc)
+
+    @patch("shutil.which", return_value=None)
+    @patch("random.choices", return_value=[2])
+    def test_retry_fc_has_format_rgba_before_blend(self, _mock_choices, _mock_which):
+        """Retry filtergraph must also have format=rgba before blend."""
+        from apps.api.services import render_compiler as rc
+
+        def fake_run(cmd, step_name, timeout=180):
+            out_file = cmd[-1]
+            if out_file.endswith((".mp4", ".mkv", ".mov")):
+                if step_name == "layer-broll-overlays-captions":
+                    raise RuntimeError("simulated motion pass failure")
+                with open(out_file, "wb") as f:
+                    f.write(b"\x00" * 512)
+            return None
+
+        plan_data = {
+            "version": "1",
+            "preset_id": "snappy-creator",
+            "output": {"aspect_ratio": "9:16", "resolution": [1080, 1920], "max_duration_sec": 60},
+            "main_cuts": [{"start": 0.0, "end": 10.0}],
+            "punch_ins": [],
+            "broll": {"enabled": False, "strategy": "cutaway_fullscreen", "inserts": []},
+            "overlays": {"enabled": False, "items": []},
+            "captions": {
+                "enabled": True,
+                "style_id": "helvetica_punch",
+                "max_words_per_line": 3,
+                "max_lines": 1,
+                "style": {"invert": True, "invert_scope": "all"},
+            },
+            "music": {"enabled": False, "track_id": "upbeat-energy", "target_volume_db": -18.0},
+            "rationale": {"hook": "test", "structure": []},
+        }
+        plan = EditPlan.model_validate(plan_data)
+        transcript = _make_transcript()
+
+        with tempfile.TemporaryDirectory() as td:
+            work = os.path.join(td, "work")
+            os.makedirs(work)
+            source_video = os.path.join(td, "source.mp4")
+            output_path = os.path.join(td, "output.mp4")
+            with open(source_video, "wb") as f:
+                f.write(b"\x00" * 1024)
+
+            with patch.object(rc, "_run_ffmpeg", side_effect=fake_run):
+                try:
+                    rc.compile_render(plan, source_video, transcript, output_path, work_dir=work)
+                except Exception:
+                    pass
+
+            fc_retry_path = os.path.join(work, "filter_complex_retry.txt")
+            self.assertTrue(os.path.exists(fc_retry_path))
+            with open(fc_retry_path) as f:
+                fc_retry = f.read()
+            self.assertIn("format=rgba[_inv_base_rgba_r]", fc_retry)
+            self.assertIn("format=rgba[_inv_mask_rgba_r]", fc_retry)
+            self.assertIn("[_inv_base_rgba_r][_inv_mask_rgba_r]blend=all_mode=difference:shortest=1", fc_retry)
+
+
+# ── Invert ASS layout-match tests ────────────────────────────────────────
+
+class TestInvertASSLayoutMatch(unittest.TestCase):
+    """Verify captions_invert.ass has layout-identical Style to captions.ass."""
+
+    def test_playres_matches(self):
+        """PlayResX/PlayResY must be identical between main and invert."""
+        plan = _make_plan(style={"invert": True, "invert_scope": "all"})
+        transcript = _make_transcript()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(ass_path) as f:
+                main = f.read()
+            with open(inv_path) as f:
+                inv = f.read()
+            for field in ("PlayResX", "PlayResY", "ScriptType", "WrapStyle"):
+                main_val = [l for l in main.splitlines() if l.startswith(field)][0]
+                inv_val = [l for l in inv.splitlines() if l.startswith(field)][0]
+                self.assertEqual(main_val, inv_val, f"{field} must match")
+
+    def test_style_layout_fields_match(self):
+        """All layout-affecting Style fields must match between main and invert.
+
+        Only PrimaryColour, SecondaryColour may differ (white mask vs user color).
+        """
+        plan = _make_plan(style={"invert": True, "invert_scope": "all"})
+        transcript = _make_transcript()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(ass_path) as f:
+                main_content = f.read()
+            with open(inv_path) as f:
+                inv_content = f.read()
+            main_style = [l for l in main_content.splitlines() if l.startswith("Style:")][0]
+            inv_style = [l for l in inv_content.splitlines() if l.startswith("Style:")][0]
+            main_parts = main_style.split(",")
+            inv_parts = inv_style.split(",")
+            # Fields: 0=Name, 1=Fontname, 2=Fontsize, 3=Primary, 4=Secondary,
+            # 5=OutlineColour, 6=BackColour, 7=Bold, 8=Italic, 9=Underline,
+            # 10=StrikeOut, 11-12=ScaleX/Y, 13=Spacing(idx14), 14=Angle(idx15),
+            # 15=BorderStyle(idx16), 16=Outline, 17=Shadow, 18=Alignment,
+            # 19=MarginL, 20=MarginR, 21=MarginV, 22=Encoding
+            # Layout fields that must match (everything except 3=Primary, 4=Secondary):
+            layout_indices = [0, 1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+            for idx in layout_indices:
+                self.assertEqual(
+                    main_parts[idx], inv_parts[idx],
+                    f"Style field index {idx}: main={main_parts[idx]!r} != inv={inv_parts[idx]!r}",
+                )
 
 
 if __name__ == "__main__":
