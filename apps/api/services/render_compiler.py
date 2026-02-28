@@ -1096,6 +1096,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     _Y_FIXED = style.get("_y_override", _Y_DEFAULT)
     _ALIGN = style.get("_align_override", 5)
 
+    # --- invert / negative caption flags ------------------------------------
+    invert_enabled = (
+        caption_style is not None
+        and caption_style.invert is True
+    )
+    invert_scope = "all"  # default
+    if invert_enabled and caption_style and caption_style.invert_scope in ("all", "emphasis"):
+        invert_scope = caption_style.invert_scope
+
     if is_fixed_pos_style:
         micro = _chunk_words_micro(all_words, max_words=3, weighted_random=True)
 
@@ -1126,7 +1135,26 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 if emphasis_font is None:
                     emphasis_font = style["fontname"]  # same as primary
         primary_font = style["fontname"]
+        base_fontsize = style["fontsize"]
         emphasis_applied = 0  # count of chunks where emphasis was applied
+
+        # --- emphasis size multiplier (3C) ------------------------------------
+        EMPHASIS_SIZE_MULT_DEFAULT = 1.12
+        _SERIF_SCRIPT_HINTS = {
+            "playfair display", "playfairdisplay", "eb garamond", "ebgaramond",
+            "dejavu serif", "noto serif", "liberation serif",
+            "pinyon script", "pinyonscript",
+        }
+        emph_size_mult = 1.0  # no bump unless serif/script
+        if emphasis_enabled and emphasis_font:
+            if caption_style and caption_style.emphasis_size_multiplier is not None:
+                emph_size_mult = max(1.0, min(1.35, caption_style.emphasis_size_multiplier))
+            elif emphasis_font.lower() in _SERIF_SCRIPT_HINTS:
+                emph_size_mult = EMPHASIS_SIZE_MULT_DEFAULT
+        emph_fontsize = round(base_fontsize * emph_size_mult)
+
+        # Collect invert dialogue lines alongside main content
+        invert_dialogues: list[str] = []
 
         pos_count = 0
         for ch in micro:
@@ -1159,6 +1187,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 if not apply_emph and (pos_count + 1) % 8 == 0:
                     apply_emph = True
 
+            # --- build emphasis size tags (only when multiplier > 1) ---------
+            _emph_open = f"{{\\fs{emph_fontsize}\\fn{emphasis_font}}}" if emph_size_mult > 1.0 else f"{{\\fn{emphasis_font}}}"
+            _emph_close = f"{{\\fs{base_fontsize}\\fn{primary_font}}}" if emph_size_mult > 1.0 else f"{{\\fn{primary_font}}}"
+
             if karaoke_enabled:
                 # Build karaoke-tagged text with per-word timing
                 karaoke_parts = []
@@ -1174,17 +1206,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     # Emphasis on last word of chunk
                     if apply_emph and i == len(chunk_words) - 1:
                         karaoke_parts.append(
-                            f"{{\\kf{cs}}}{{\\fn{emphasis_font}}}{cleaned}{{\\fn{primary_font}}}"
+                            f"{{\\kf{cs}}}{_emph_open}{cleaned}{_emph_close}"
                         )
                     else:
                         karaoke_parts.append(f"{{\\kf{cs}}}{cleaned}")
                 text = f"{{\\an{_ALIGN}\\pos(540,{_Y_FIXED})}}" + " ".join(karaoke_parts)
             else:
                 if apply_emph and len(chunk_words) >= 1:
-                    # Wrap last word with emphasis font
+                    # Wrap last word with emphasis font + size
                     word_parts = [w["word"].strip() for w in chunk_words]
                     last = word_parts[-1]
-                    word_parts[-1] = f"{{\\fn{emphasis_font}}}{last}{{\\fn{primary_font}}}"
+                    word_parts[-1] = f"{_emph_open}{last}{_emph_close}"
                     emph_text = " ".join(word_parts)
                     emph_text = emph_text.replace("\\N", " ").replace("\n", " ")
                     text = f"{{\\an{_ALIGN}\\pos(540,{_Y_FIXED})}}{emph_text}"
@@ -1195,9 +1227,50 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 emphasis_applied += 1
 
             ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}\n"
+
+            # --- invert dialogue collection ----------------------------------
+            if invert_enabled:
+                inv_pos = f"{{\\an{_ALIGN}\\pos(540,{_Y_FIXED})}}"
+                if invert_scope == "all":
+                    # White-only, no karaoke, no emphasis font, no size changes
+                    invert_dialogues.append(
+                        f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{inv_pos}{plain_text}\n"
+                    )
+                elif invert_scope == "emphasis" and apply_emph:
+                    # Only the emphasized word(s), white-only
+                    last_word = chunk_words[-1]["word"].strip()
+                    invert_dialogues.append(
+                        f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{inv_pos}{last_word}\n"
+                    )
+
             pos_count += 1
 
         Path(output_path).write_text(ass_content)
+
+        # --- write captions_invert.ass when invert is enabled ----------------
+        if invert_enabled and invert_dialogues:
+            inv_ass = f"""[Script Info]
+Title: Compose Captions (Invert Mask)
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,{style['fontname']},{style['fontsize']},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,{style['bold']},0,0,0,100,100,{style['spacing']},0,1,0,0,2,40,40,{style['margin_v']},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+            inv_ass += "".join(invert_dialogues)
+            inv_path = output_path.replace("captions.ass", "captions_invert.ass")
+            Path(inv_path).write_text(inv_ass)
+            logger.info(
+                "ASS invert mask: scope=%s lines=%d path=%s",
+                invert_scope, len(invert_dialogues), inv_path,
+            )
+
         logger.info(
             "ASS captions: style_id=%s font=%s size=%d tracking=%d y=%d "
             "karaoke=%s emphasis_font=%s emphasis_applied=%d lines=%d",
@@ -1454,9 +1527,12 @@ def compile_render(
 
     has_captions = False
     ass_path = str(work / "captions.ass")
+    inv_ass_path = str(work / "captions_invert.ass")
+    has_invert_captions = False
     if edit_plan.captions.enabled:
         generate_ass_subtitles(transcript, edit_plan, ass_path)
         has_captions = Path(ass_path).exists() and Path(ass_path).stat().st_size > 100
+        has_invert_captions = Path(inv_ass_path).exists() and Path(inv_ass_path).stat().st_size > 100
 
     # If we have ANY visual layers to apply, do one filter_complex pass
     if broll_clips or overlay_items or has_captions:
@@ -1531,9 +1607,44 @@ def compile_render(
 
         # ---- CAPTIONS (ASS burn) ----
         if has_captions:
-            cap_out = "vcap"
-            filters.append(f"{last_label}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]")
-            last_label = f"[{cap_out}]"
+            _caption_style = edit_plan.captions.style
+            _invert_on = (
+                has_invert_captions
+                and _caption_style is not None
+                and _caption_style.invert is True
+            )
+            _inv_scope = (
+                _caption_style.invert_scope
+                if _invert_on and _caption_style and _caption_style.invert_scope in ("all", "emphasis")
+                else "all"
+            )
+
+            if _invert_on:
+                # Generate black canvas, burn invert-mask ASS, blend with difference
+                filters.append(
+                    f"color=black:s=1080x1920:r=30[_inv_black]"
+                )
+                filters.append(
+                    f"[_inv_black]ass={inv_ass_path}:fontsdir=/usr/share/fonts[_inv_text]"
+                )
+                inv_blend_out = "_inv_blended"
+                filters.append(
+                    f"{last_label}[_inv_text]blend=all_mode=difference[{inv_blend_out}]"
+                )
+                last_label = f"[{inv_blend_out}]"
+
+                if _inv_scope == "emphasis":
+                    # Emphasis-only invert: also apply normal captions on top
+                    cap_out = "vcap"
+                    filters.append(
+                        f"{last_label}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]"
+                    )
+                    last_label = f"[{cap_out}]"
+                # scope="all": normal captions NOT applied (difference blend replaces them)
+            else:
+                cap_out = "vcap"
+                filters.append(f"{last_label}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]")
+                last_label = f"[{cap_out}]"
 
         map_v = last_label if str(last_label).startswith("[") else f"[{last_label}]"
 
@@ -1670,9 +1781,30 @@ def compile_render(
 
             # ---- CAPTIONS (ASS burn) ----
             if has_captions:
-                cap_out = "vcap"
-                filters_retry.append(f"{last_label_retry}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]")
-                last_label_retry = f"[{cap_out}]"
+                _caption_style_r = edit_plan.captions.style
+                _invert_on_r = (
+                    has_invert_captions
+                    and _caption_style_r is not None
+                    and _caption_style_r.invert is True
+                )
+                _inv_scope_r = (
+                    _caption_style_r.invert_scope
+                    if _invert_on_r and _caption_style_r and _caption_style_r.invert_scope in ("all", "emphasis")
+                    else "all"
+                )
+                if _invert_on_r:
+                    filters_retry.append(f"color=black:s=1080x1920:r=30[_inv_black_r]")
+                    filters_retry.append(f"[_inv_black_r]ass={inv_ass_path}:fontsdir=/usr/share/fonts[_inv_text_r]")
+                    filters_retry.append(f"{last_label_retry}[_inv_text_r]blend=all_mode=difference[_inv_blended_r]")
+                    last_label_retry = "[_inv_blended_r]"
+                    if _inv_scope_r == "emphasis":
+                        cap_out = "vcap"
+                        filters_retry.append(f"{last_label_retry}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]")
+                        last_label_retry = f"[{cap_out}]"
+                else:
+                    cap_out = "vcap"
+                    filters_retry.append(f"{last_label_retry}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]")
+                    last_label_retry = f"[{cap_out}]"
 
             map_v_retry = last_label_retry if str(last_label_retry).startswith("[") else f"[{last_label_retry}]"
 

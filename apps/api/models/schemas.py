@@ -153,6 +153,9 @@ class CaptionStyle(BaseModel):
     align: Optional[int] = None              # ASS alignment (1-9), default 5
     karaoke: Optional[CaptionKaraokeStyle] = None
     pause_emphasis: Optional[CaptionPauseEmphasis] = None
+    invert: Optional[bool] = None            # difference-blend negative captions
+    invert_scope: Optional[str] = None       # "all" | "emphasis"
+    emphasis_size_multiplier: Optional[float] = None  # 1.00..1.35
 
 
 class CaptionConfig(BaseModel):

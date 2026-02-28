@@ -786,7 +786,8 @@ class TestEmphasisFontHeuristic(unittest.TestCase):
             with open(path) as f:
                 content = f.read()
             # At least one dialogue should have emphasis font wrapping
-            self.assertIn("{\\fnDejaVu Serif}", content)
+            # DejaVu Serif is serif so it gets size bump: \fs72\fnDejaVu Serif
+            self.assertIn("\\fnDejaVu Serif}", content)
         finally:
             os.unlink(path)
 
@@ -829,9 +830,10 @@ class TestEmphasisFontHeuristic(unittest.TestCase):
                 content = f.read()
             # With 30 one-word chunks and threshold=5.0 (no natural pauses),
             # chunks 8, 16, 24 should get emphasis
-            self.assertIn("{\\fnDejaVu Serif}", content)
+            # DejaVu Serif is serif so it gets size bump: \fs72\fnDejaVu Serif
+            self.assertIn("\\fnDejaVu Serif}", content)
             dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
-            emphasis_count = sum(1 for d in dialogues if "{\\fnDejaVu Serif}" in d)
+            emphasis_count = sum(1 for d in dialogues if "\\fnDejaVu Serif}" in d)
             self.assertGreaterEqual(emphasis_count, 1, "Expected at least one emphasis chunk via 8th fallback")
         finally:
             os.unlink(path)
