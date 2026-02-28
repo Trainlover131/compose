@@ -1258,7 +1258,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{style['fontname']},{style['fontsize']},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,{style['bold']},0,0,0,100,100,{style['spacing']},0,1,0,0,2,40,40,{style['margin_v']},1
+Style: Default,{style['fontname']},{style['fontsize']},&H00FFFFFF,&H00FFFFFF,{outline_colour},&H80000000,{style['bold']},{italic},0,0,100,100,{style['spacing']},0,1,{style['outline']},{style['shadow']},2,40,40,{style['margin_v']},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -1631,9 +1631,12 @@ def compile_render(
                 filters.append(
                     f"[_inv_black]ass={inv_ass_path}:fontsdir=/usr/share/fonts[_inv_text]"
                 )
+                # Force both inputs to same pixel format before blend to prevent color tint
+                filters.append(f"{last_label}format=rgba[_inv_base_rgba]")
+                filters.append(f"[_inv_text]format=rgba[_inv_mask_rgba]")
                 inv_blend_out = "_inv_blended"
                 filters.append(
-                    f"{last_label}[_inv_text]blend=all_mode=difference:shortest=1[{inv_blend_out}]"
+                    f"[_inv_base_rgba][_inv_mask_rgba]blend=all_mode=difference:shortest=1[{inv_blend_out}]"
                 )
                 last_label = f"[{inv_blend_out}]"
 
@@ -1799,7 +1802,10 @@ def compile_render(
                 if _invert_on_r:
                     filters_retry.append(f"color=black:s=1080x1920:r=30:d={_total_dur:.3f}[_inv_black_r]")
                     filters_retry.append(f"[_inv_black_r]ass={inv_ass_path}:fontsdir=/usr/share/fonts[_inv_text_r]")
-                    filters_retry.append(f"{last_label_retry}[_inv_text_r]blend=all_mode=difference:shortest=1[_inv_blended_r]")
+                    # Force both inputs to same pixel format before blend to prevent color tint
+                    filters_retry.append(f"{last_label_retry}format=rgba[_inv_base_rgba_r]")
+                    filters_retry.append(f"[_inv_text_r]format=rgba[_inv_mask_rgba_r]")
+                    filters_retry.append(f"[_inv_base_rgba_r][_inv_mask_rgba_r]blend=all_mode=difference:shortest=1[_inv_blended_r]")
                     last_label_retry = "[_inv_blended_r]"
                     if _inv_scope_r == "emphasis":
                         cap_out = "vcap"
