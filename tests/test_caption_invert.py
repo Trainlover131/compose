@@ -761,26 +761,26 @@ class TestInvertFiltergraphBounded(unittest.TestCase):
         self.assertIsNotNone(fc)
         self.assertNotIn("color=black", fc)
         self.assertNotIn("blend=all_mode=difference", fc)
-        self.assertNotIn("format=rgba", fc)
+        self.assertNotIn("format=rgb24", fc)
 
     @patch("shutil.which", return_value=None)
     @patch("random.choices", return_value=[2])
-    def test_primary_fc_has_format_rgba_before_blend(self, _mock_choices, _mock_which):
-        """When invert=true, format=rgba must appear exactly twice before blend."""
+    def test_primary_fc_has_format_rgb24_before_blend(self, _mock_choices, _mock_which):
+        """When invert=true, format=rgb24 must appear exactly twice before blend."""
         fc, _ = self._run_compile_and_get_fc(
             style={"invert": True, "invert_scope": "all"},
         )
         self.assertIsNotNone(fc)
-        # Both inputs must be format=rgba before the blend
-        self.assertIn("format=rgba[_inv_base_rgba]", fc)
-        self.assertIn("format=rgba[_inv_mask_rgba]", fc)
-        # The blend must reference the rgba labels
-        self.assertIn("[_inv_base_rgba][_inv_mask_rgba]blend=all_mode=difference:shortest=1", fc)
+        # Both inputs must be format=rgb24 before the blend
+        self.assertIn("format=rgb24[_inv_base_rgb]", fc)
+        self.assertIn("format=rgb24[_inv_mask_rgb]", fc)
+        # The blend must reference the rgb24 labels
+        self.assertIn("[_inv_base_rgb][_inv_mask_rgb]blend=all_mode=difference:shortest=1", fc)
 
     @patch("shutil.which", return_value=None)
     @patch("random.choices", return_value=[2])
-    def test_retry_fc_has_format_rgba_before_blend(self, _mock_choices, _mock_which):
-        """Retry filtergraph must also have format=rgba before blend."""
+    def test_retry_fc_has_format_rgb24_before_blend(self, _mock_choices, _mock_which):
+        """Retry filtergraph must also have format=rgb24 before blend."""
         from apps.api.services import render_compiler as rc
 
         def fake_run(cmd, step_name, timeout=180):
@@ -831,9 +831,9 @@ class TestInvertFiltergraphBounded(unittest.TestCase):
             self.assertTrue(os.path.exists(fc_retry_path))
             with open(fc_retry_path) as f:
                 fc_retry = f.read()
-            self.assertIn("format=rgba[_inv_base_rgba_r]", fc_retry)
-            self.assertIn("format=rgba[_inv_mask_rgba_r]", fc_retry)
-            self.assertIn("[_inv_base_rgba_r][_inv_mask_rgba_r]blend=all_mode=difference:shortest=1", fc_retry)
+            self.assertIn("format=rgb24[_inv_base_rgb_r]", fc_retry)
+            self.assertIn("format=rgb24[_inv_mask_rgb_r]", fc_retry)
+            self.assertIn("[_inv_base_rgb_r][_inv_mask_rgb_r]blend=all_mode=difference:shortest=1", fc_retry)
 
 
 # ── Invert ASS layout-match tests ────────────────────────────────────────
@@ -889,6 +889,58 @@ class TestInvertASSLayoutMatch(unittest.TestCase):
                     main_parts[idx], inv_parts[idx],
                     f"Style field index {idx}: main={main_parts[idx]!r} != inv={inv_parts[idx]!r}",
                 )
+
+
+# ── Emphasis font in invert mask tests ────────────────────────────────────
+
+class TestInvertEmphasisFontMatch(unittest.TestCase):
+    """When invert_scope=emphasis, invert dialogues must use the same emphasis font."""
+
+    @patch("shutil.which", return_value=None)
+    def test_emphasis_invert_has_font_override(self, _mock):
+        """Invert dialogue for emphasis word must include \\fn tag for emphasis font."""
+        plan = _make_plan(style={
+            "invert": True,
+            "invert_scope": "emphasis",
+            "font_emphasis": "Playfair Display",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 0.2},
+        })
+        transcript = _make_transcript_with_pause()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            self.assertTrue(os.path.exists(inv_path))
+            with open(inv_path) as f:
+                inv_content = f.read()
+            dialogues = [l for l in inv_content.splitlines() if l.startswith("Dialogue:")]
+            self.assertGreater(len(dialogues), 0, "Should have emphasis invert dialogues")
+            for d in dialogues:
+                text = d.split(",,", 1)[-1]
+                self.assertIn("\\fnPlayfair Display", text,
+                              "Invert emphasis must use the same emphasis font")
+
+    @patch("shutil.which", return_value=None)
+    def test_emphasis_invert_serif_has_size_tag(self, _mock):
+        """Invert dialogue for serif emphasis must include \\fs tag matching main."""
+        plan = _make_plan(style={
+            "invert": True,
+            "invert_scope": "emphasis",
+            "font_emphasis": "Playfair Display",
+            "pause_emphasis": {"enabled": True, "threshold_sec": 0.2},
+            "emphasis_size_multiplier": 1.2,
+        })
+        transcript = _make_transcript_with_pause()
+        with tempfile.TemporaryDirectory() as td:
+            ass_path = os.path.join(td, "captions.ass")
+            inv_path = os.path.join(td, "captions_invert.ass")
+            generate_ass_subtitles(transcript, plan, ass_path)
+            with open(inv_path) as f:
+                inv_content = f.read()
+            dialogues = [l for l in inv_content.splitlines() if l.startswith("Dialogue:")]
+            # base fontsize is 64, 64 * 1.2 = 76.8 -> 77
+            has_fs = any("\\fs77" in d for d in dialogues)
+            self.assertTrue(has_fs, "Invert emphasis must include \\fs tag matching emphasis size")
 
 
 if __name__ == "__main__":
