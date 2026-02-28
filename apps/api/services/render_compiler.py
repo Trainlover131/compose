@@ -1651,22 +1651,32 @@ def compile_render(
                 # (Y=16) conversion mismatch that causes a green tint.  Burn
                 # the invert-mask ASS on the rgb24 canvas so the "black" pixels
                 # are guaranteed to be exact RGB(0,0,0).
+                #
+                # IMPORTANT: setparams=range=pc is required after each
+                # format=rgb24 because the format filter inherits the
+                # source's color_range=tv metadata even though the actual
+                # pixel data is now full-range (0-255).  Without this, the
+                # final format=yuv420p reads the stale tv flag and applies
+                # the wrong limited-to-limited mapping, producing a green
+                # tint across the entire frame.
                 filters.append(
-                    f"color=black:s=1080x1920:r=30:d={_total_dur:.3f},format=rgb24[_inv_black]"
+                    f"color=black:s=1080x1920:r=30:d={_total_dur:.3f},format=rgb24,setparams=range=pc[_inv_black]"
                 )
                 filters.append(
                     f"[_inv_black]ass={inv_ass_path}:fontsdir=/usr/share/fonts[_inv_text]"
                 )
-                # Both inputs in rgb24 — no alpha channel, no range ambiguity.
-                filters.append(f"{last_label}format=rgb24[_inv_base_rgb]")
-                filters.append(f"[_inv_text]format=rgb24[_inv_mask_rgb]")
+                # Both inputs in rgb24 with explicit full-range declaration.
+                filters.append(f"{last_label}format=rgb24,setparams=range=pc[_inv_base_rgb]")
+                filters.append(f"[_inv_text]setparams=range=pc[_inv_mask_rgb]")
                 inv_blend_out = "_inv_blended"
                 filters.append(
                     f"[_inv_base_rgb][_inv_mask_rgb]blend=all_mode=difference:shortest=1[{inv_blend_out}]"
                 )
                 last_label = f"[{inv_blend_out}]"
 
-                # Convert back to yuv420p for the encoder.
+                # Convert back to yuv420p for the encoder.  The blend
+                # output inherits range=pc so the conversion correctly
+                # maps full-range RGB [0,255] → TV-range YUV [16,235].
                 filters.append(f"{last_label}format=yuv420p[_inv_yuv]")
                 last_label = "[_inv_yuv]"
 
@@ -1832,11 +1842,12 @@ def compile_render(
                         )
                         last_label_retry = "[_cap_pre_inv_r]"
 
-                    # Black canvas in rgb24 to avoid YUV TV-range green tint
-                    filters_retry.append(f"color=black:s=1080x1920:r=30:d={_total_dur:.3f},format=rgb24[_inv_black_r]")
+                    # Black canvas in rgb24 + setparams=range=pc to fix green tint
+                    # (see main path comment for full explanation).
+                    filters_retry.append(f"color=black:s=1080x1920:r=30:d={_total_dur:.3f},format=rgb24,setparams=range=pc[_inv_black_r]")
                     filters_retry.append(f"[_inv_black_r]ass={inv_ass_path}:fontsdir=/usr/share/fonts[_inv_text_r]")
-                    filters_retry.append(f"{last_label_retry}format=rgb24[_inv_base_rgb_r]")
-                    filters_retry.append(f"[_inv_text_r]format=rgb24[_inv_mask_rgb_r]")
+                    filters_retry.append(f"{last_label_retry}format=rgb24,setparams=range=pc[_inv_base_rgb_r]")
+                    filters_retry.append(f"[_inv_text_r]setparams=range=pc[_inv_mask_rgb_r]")
                     filters_retry.append(f"[_inv_base_rgb_r][_inv_mask_rgb_r]blend=all_mode=difference:shortest=1[_inv_blended_r]")
                     filters_retry.append("[_inv_blended_r]format=yuv420p[_inv_yuv_r]")
                     last_label_retry = "[_inv_yuv_r]"
