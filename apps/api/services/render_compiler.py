@@ -1018,8 +1018,15 @@ def generate_ass_subtitles(
             "spacing": -3,
         },
     }
-    style = style_presets.get(caption_cfg.style_id, style_presets["default"])
-    is_fixed_pos_style = caption_cfg.style_id in ("helvetica_punch", "snappy")
+    # helvetica_punch is THE default caption style — use it for "default" and
+    # any unrecognised style_id so captions always get the Liberation-Sans /
+    # micro-chunk / fixed-position look unless the user explicitly picks
+    # a different named style (cinematic, podcast, luxury, study).
+    _effective_style_id = caption_cfg.style_id
+    if _effective_style_id == "default":
+        _effective_style_id = "helvetica_punch"
+    style = style_presets.get(_effective_style_id, style_presets["helvetica_punch"])
+    is_fixed_pos_style = _effective_style_id in ("helvetica_punch", "snappy")
 
     # --- apply user-driven style overrides (helvetica_punch / snappy only) -
     caption_style = caption_cfg.style
@@ -1085,7 +1092,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         return output_path
 
     # --- micro-chunk path for helvetica_punch & snappy --------------------
-    _Y_DEFAULT = 960  # center screen for 1080x1920
+    _Y_DEFAULT = 1180  # lower-middle center (original helvetica_punch position)
     _Y_FIXED = style.get("_y_override", _Y_DEFAULT)
     _ALIGN = style.get("_align_override", 5)
 
@@ -1096,12 +1103,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         emphasis_font: str | None = None
         emphasis_threshold: float = 0.4  # default pause gap in seconds
         emphasis_enabled = False
-        if caption_style is not None and caption_style.pause_emphasis is not None:
-            pe = caption_style.pause_emphasis
-            if pe.enabled:
+        if caption_style is not None:
+            # Auto-enable emphasis when font_emphasis is set, even if
+            # pause_emphasis was not explicitly configured by the planner.
+            # But respect an explicit pause_emphasis.enabled=False opt-out.
+            has_explicit_pe = (
+                caption_style.pause_emphasis is not None
+                and caption_style.pause_emphasis.enabled is True
+            )
+            pe_explicitly_disabled = (
+                caption_style.pause_emphasis is not None
+                and caption_style.pause_emphasis.enabled is False
+            )
+            has_emphasis_font = bool(caption_style.font_emphasis)
+            if has_explicit_pe or (has_emphasis_font and not pe_explicitly_disabled):
                 emphasis_enabled = True
-                if pe.threshold_sec is not None:
-                    emphasis_threshold = max(0.1, min(2.0, pe.threshold_sec))
+                if caption_style.pause_emphasis is not None and caption_style.pause_emphasis.threshold_sec is not None:
+                    emphasis_threshold = max(0.1, min(2.0, caption_style.pause_emphasis.threshold_sec))
                 emphasis_font = _resolve_font(
                     caption_style.font_emphasis if caption_style.font_emphasis else None,
                 )

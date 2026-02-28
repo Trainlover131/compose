@@ -376,7 +376,7 @@ class TestCaptionStyleASS(unittest.TestCase):
             self.assertGreater(len(dialogues), 0)
             for d in dialogues:
                 text = d.split(",,", 1)[-1]
-                self.assertIn("{\\an5\\pos(540,960)}", text)
+                self.assertIn("{\\an5\\pos(540,1180)}", text)
                 self.assertNotIn("{\\k", text)
         finally:
             os.unlink(path)
@@ -878,8 +878,8 @@ class TestCenterPosition(unittest.TestCase):
             "language": "en",
         }
 
-    def test_default_y_960(self):
-        """Default Y should be 960 (center of 1920px screen)."""
+    def test_default_y_1180(self):
+        """Default Y should be 1180 (original helvetica_punch lower-middle position)."""
         plan = self._make_plan()
         transcript = self._make_transcript()
         with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as f:
@@ -891,7 +891,7 @@ class TestCenterPosition(unittest.TestCase):
             dialogues = [l for l in content.splitlines() if l.startswith("Dialogue:")]
             for d in dialogues:
                 text = d.split(",,", 1)[-1]
-                self.assertIn("\\pos(540,960)", text)
+                self.assertIn("\\pos(540,1180)", text)
         finally:
             os.unlink(path)
 
@@ -961,8 +961,8 @@ class TestMissingFontFallback(unittest.TestCase):
     @patch("shutil.which", return_value=None)
     def test_alias_sans_resolves(self, _mock):
         result = _resolve_font("sans")
-        # Should resolve to first item in sans chain
-        self.assertEqual(result, "Liberation Sans")
+        # Should resolve to first item in _SANS_CHAIN (Google Sans)
+        self.assertEqual(result, "Google Sans")
 
     @patch("shutil.which", return_value=None)
     def test_alias_serif_resolves(self, _mock):
@@ -972,7 +972,8 @@ class TestMissingFontFallback(unittest.TestCase):
     @patch("shutil.which", return_value=None)
     def test_alias_mono_resolves(self, _mock):
         result = _resolve_font("mono")
-        self.assertEqual(result, "Noto Mono")
+        # Should resolve to first item in _MONO_CHAIN (JetBrains Mono)
+        self.assertEqual(result, "JetBrains Mono")
 
 
 # ── Timing / broll / overlay invariance tests ─────────────────────────────
@@ -1017,7 +1018,8 @@ class TestTimingInvariance(unittest.TestCase):
             "language": "en",
         }
 
-    def test_style_change_preserves_timing(self):
+    @patch("random.choices", return_value=[2])  # deterministic chunk size
+    def test_style_change_preserves_timing(self, _mock_choices):
         """Changing caption style should not alter Dialogue start/end times."""
         transcript = self._make_transcript()
         # Generate with default style
