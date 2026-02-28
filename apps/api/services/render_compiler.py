@@ -1237,19 +1237,24 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{inv_pos}{plain_text}\n"
                     )
                 elif invert_scope == "emphasis" and apply_emph:
-                    # Only the emphasized word(s) — must use the SAME emphasis
-                    # font/size as the main caption so glyph metrics match and
-                    # the invert mask overlays pixel-perfect.
-                    last_word = chunk_words[-1]["word"].strip()
-                    if emphasis_font:
-                        inv_emph_tags = f"\\fn{emphasis_font}"
-                        if emph_size_mult > 1.0:
-                            inv_emph_tags = f"\\fs{emph_fontsize}{inv_emph_tags}"
-                        inv_word = f"{{{inv_emph_tags}}}{last_word}"
-                    else:
-                        inv_word = last_word
+                    # Pixel-perfect alignment: include ALL words so glyph layout
+                    # is identical to captions.ass.  Non-emphasis words are fully
+                    # transparent (\alpha&HFF&); the emphasis word is opaque
+                    # (\alpha&H00&) with the same font/size override tags.
+                    inv_parts = []
+                    for wi, w in enumerate(chunk_words):
+                        cleaned = w["word"].strip()
+                        if wi == len(chunk_words) - 1:
+                            # Emphasis word: opaque, same font/size as main
+                            inv_parts.append(
+                                f"{{\\alpha&H00&}}{_emph_open}{cleaned}{_emph_close}"
+                            )
+                        else:
+                            # Non-emphasis: transparent but present for layout
+                            inv_parts.append(f"{{\\alpha&HFF&}}{cleaned}")
+                    inv_text = " ".join(inv_parts)
                     invert_dialogues.append(
-                        f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{inv_pos}{inv_word}\n"
+                        f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{inv_pos}{inv_text}\n"
                     )
 
             pos_count += 1
@@ -1652,6 +1657,11 @@ def compile_render(
                 )
                 last_label = f"[{inv_blend_out}]"
 
+                # Explicit RGB→YUV conversion after blend to prevent
+                # green tint from FFmpeg's auto-inserted colorspace guess.
+                filters.append(f"{last_label}format=yuv420p[_inv_yuv]")
+                last_label = "[_inv_yuv]"
+
                 if _inv_scope == "emphasis":
                     # Emphasis-only invert: also apply normal captions on top
                     cap_out = "vcap"
@@ -1690,6 +1700,7 @@ def compile_render(
             "-filter_complex", fc,
             "-map", map_v, "-map", "0:a?",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+            "-pix_fmt", "yuv420p",
             "-threads", "2",
             "-af", "aresample=async=1:first_pts=0",
             "-c:a", "aac", "-b:a", "160k",
@@ -1818,7 +1829,9 @@ def compile_render(
                     filters_retry.append(f"{last_label_retry}format=rgb24[_inv_base_rgb_r]")
                     filters_retry.append(f"[_inv_text_r]format=rgb24[_inv_mask_rgb_r]")
                     filters_retry.append(f"[_inv_base_rgb_r][_inv_mask_rgb_r]blend=all_mode=difference:shortest=1[_inv_blended_r]")
-                    last_label_retry = "[_inv_blended_r]"
+                    # Explicit RGB→YUV conversion after blend (same fix as primary path)
+                    filters_retry.append("[_inv_blended_r]format=yuv420p[_inv_yuv_r]")
+                    last_label_retry = "[_inv_yuv_r]"
                     if _inv_scope_r == "emphasis":
                         cap_out = "vcap"
                         filters_retry.append(f"{last_label_retry}ass={ass_path}:fontsdir=/usr/share/fonts[{cap_out}]")
@@ -1855,6 +1868,7 @@ def compile_render(
                 "-filter_complex", fc_retry,
                 "-map", map_v_retry, "-map", "0:a?",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+                "-pix_fmt", "yuv420p",
                 "-threads", "2",
                 "-af", "aresample=async=1:first_pts=0",
                 "-c:a", "aac", "-b:a", "160k",
