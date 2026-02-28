@@ -1539,6 +1539,10 @@ def compile_render(
         layered_path = work / "layered.mp4"
         motion_enabled = True
 
+        # Total output duration (sum of all main_cuts) — used to bound
+        # the black canvas for invert-blend so FFmpeg doesn't hang.
+        _total_dur = sum(c.end - c.start for c in edit_plan.main_cuts)
+
         # Inputs: base video first, then b-roll, then overlay images
         inputs = ["-i", current_video]
         for bc in broll_clips:
@@ -1622,14 +1626,14 @@ def compile_render(
             if _invert_on:
                 # Generate black canvas, burn invert-mask ASS, blend with difference
                 filters.append(
-                    f"color=black:s=1080x1920:r=30[_inv_black]"
+                    f"color=black:s=1080x1920:r=30:d={_total_dur:.3f}[_inv_black]"
                 )
                 filters.append(
                     f"[_inv_black]ass={inv_ass_path}:fontsdir=/usr/share/fonts[_inv_text]"
                 )
                 inv_blend_out = "_inv_blended"
                 filters.append(
-                    f"{last_label}[_inv_text]blend=all_mode=difference[{inv_blend_out}]"
+                    f"{last_label}[_inv_text]blend=all_mode=difference:shortest=1[{inv_blend_out}]"
                 )
                 last_label = f"[{inv_blend_out}]"
 
@@ -1793,9 +1797,9 @@ def compile_render(
                     else "all"
                 )
                 if _invert_on_r:
-                    filters_retry.append(f"color=black:s=1080x1920:r=30[_inv_black_r]")
+                    filters_retry.append(f"color=black:s=1080x1920:r=30:d={_total_dur:.3f}[_inv_black_r]")
                     filters_retry.append(f"[_inv_black_r]ass={inv_ass_path}:fontsdir=/usr/share/fonts[_inv_text_r]")
-                    filters_retry.append(f"{last_label_retry}[_inv_text_r]blend=all_mode=difference[_inv_blended_r]")
+                    filters_retry.append(f"{last_label_retry}[_inv_text_r]blend=all_mode=difference:shortest=1[_inv_blended_r]")
                     last_label_retry = "[_inv_blended_r]"
                     if _inv_scope_r == "emphasis":
                         cap_out = "vcap"

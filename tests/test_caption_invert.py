@@ -554,5 +554,205 @@ class TestInvertInvariance(unittest.TestCase):
         self.assertEqual(len(plan.overlays.items), 1)
 
 
+# ── Filtergraph finite-duration tests ────────────────────────────────────
+
+class TestInvertFiltergraphBounded(unittest.TestCase):
+    """Verify the invert-blend filtergraph uses finite duration and shortest=1."""
+
+    def _run_compile_and_get_fc(self, style, main_cuts=None, transcript=None):
+        """Helper: run compile_render with mocked FFmpeg and return filtergraph strings.
+
+        Returns (primary_fc, retry_fc_or_None).
+        """
+        from apps.api.services import render_compiler as rc
+
+        if main_cuts is None:
+            main_cuts = [{"start": 0.0, "end": 10.0}]
+        if transcript is None:
+            transcript = _make_transcript()
+
+        plan_data = {
+            "version": "1",
+            "preset_id": "snappy-creator",
+            "output": {"aspect_ratio": "9:16", "resolution": [1080, 1920], "max_duration_sec": 60},
+            "main_cuts": main_cuts,
+            "punch_ins": [],
+            "broll": {"enabled": False, "strategy": "cutaway_fullscreen", "inserts": []},
+            "overlays": {"enabled": False, "items": []},
+            "captions": {
+                "enabled": True,
+                "style_id": "helvetica_punch",
+                "max_words_per_line": 3,
+                "max_lines": 1,
+                "style": style,
+            },
+            "music": {"enabled": False, "track_id": "upbeat-energy", "target_volume_db": -18.0},
+            "rationale": {"hook": "test", "structure": []},
+        }
+        plan = EditPlan.model_validate(plan_data)
+
+        with tempfile.TemporaryDirectory() as td:
+            work = os.path.join(td, "work")
+            os.makedirs(work)
+            source_video = os.path.join(td, "source.mp4")
+            output_path = os.path.join(td, "output.mp4")
+
+            # Create a dummy source video file
+            with open(source_video, "wb") as f:
+                f.write(b"\x00" * 1024)
+
+            # Mock _run_ffmpeg: create expected output files so compile_render proceeds
+            original_run = rc._run_ffmpeg
+
+            def fake_run(cmd, step_name, timeout=180):
+                # Determine the output file from the command (last arg or the arg before codec flags)
+                out_file = cmd[-1]
+                if out_file.endswith((".mp4", ".mkv", ".mov")):
+                    with open(out_file, "wb") as f:
+                        f.write(b"\x00" * 512)
+                return None
+
+            with patch.object(rc, "_run_ffmpeg", side_effect=fake_run):
+                try:
+                    rc.compile_render(plan, source_video, transcript, output_path, work_dir=work)
+                except Exception:
+                    pass  # We don't care if later steps fail
+
+            primary_fc = None
+            retry_fc = None
+            fc_path = os.path.join(work, "filter_complex.txt")
+            fc_retry_path = os.path.join(work, "filter_complex_retry.txt")
+            if os.path.exists(fc_path):
+                with open(fc_path) as f:
+                    primary_fc = f.read()
+            if os.path.exists(fc_retry_path):
+                with open(fc_retry_path) as f:
+                    retry_fc = f.read()
+            return primary_fc, retry_fc
+
+    @patch("shutil.which", return_value=None)
+    @patch("random.choices", return_value=[2])
+    def test_primary_fc_has_finite_duration(self, _mock_choices, _mock_which):
+        """Primary filtergraph color=black source must have :d= for finite duration."""
+        fc, _ = self._run_compile_and_get_fc(
+            style={"invert": True, "invert_scope": "all"},
+        )
+        self.assertIsNotNone(fc, "filter_complex.txt should exist")
+        # color=black must have :d= set
+        self.assertRegex(fc, r"color=black:s=1080x1920:r=30:d=\d+\.\d+")
+
+    @patch("shutil.which", return_value=None)
+    @patch("random.choices", return_value=[2])
+    def test_primary_fc_has_shortest(self, _mock_choices, _mock_which):
+        """Primary filtergraph blend must include shortest=1."""
+        fc, _ = self._run_compile_and_get_fc(
+            style={"invert": True, "invert_scope": "all"},
+        )
+        self.assertIsNotNone(fc, "filter_complex.txt should exist")
+        self.assertIn("blend=all_mode=difference:shortest=1", fc)
+
+    @patch("shutil.which", return_value=None)
+    @patch("random.choices", return_value=[2])
+    def test_primary_fc_duration_matches_cuts(self, _mock_choices, _mock_which):
+        """Duration on color=black must match sum of main_cuts."""
+        # cuts must overlap with transcript words (0.0-1.6) to generate dialogues
+        cuts = [{"start": 0.0, "end": 5.0}, {"start": 5.0, "end": 10.0}]
+        # total = 5.0 + 5.0 = 10.0
+        fc, _ = self._run_compile_and_get_fc(
+            style={"invert": True, "invert_scope": "all"},
+            main_cuts=cuts,
+        )
+        self.assertIsNotNone(fc)
+        self.assertIn("d=10.000", fc)
+
+    @patch("shutil.which", return_value=None)
+    @patch("random.choices", return_value=[2])
+    def test_retry_fc_has_finite_duration(self, _mock_choices, _mock_which):
+        """Retry filtergraph color=black source must have :d= for finite duration."""
+        from apps.api.services import render_compiler as rc
+
+        # Force the primary pass to fail so the retry path runs
+        call_count = [0]
+
+        def fake_run(cmd, step_name, timeout=180):
+            call_count[0] += 1
+            out_file = cmd[-1]
+            if out_file.endswith((".mp4", ".mkv", ".mov")):
+                # Fail on the primary layer pass ("layer-broll-overlays-captions")
+                if step_name == "layer-broll-overlays-captions":
+                    raise RuntimeError("simulated motion pass failure")
+                with open(out_file, "wb") as f:
+                    f.write(b"\x00" * 512)
+            return None
+
+        plan_data = {
+            "version": "1",
+            "preset_id": "snappy-creator",
+            "output": {"aspect_ratio": "9:16", "resolution": [1080, 1920], "max_duration_sec": 60},
+            "main_cuts": [{"start": 0.0, "end": 10.0}],
+            "punch_ins": [],
+            "broll": {"enabled": False, "strategy": "cutaway_fullscreen", "inserts": []},
+            "overlays": {"enabled": False, "items": []},
+            "captions": {
+                "enabled": True,
+                "style_id": "helvetica_punch",
+                "max_words_per_line": 3,
+                "max_lines": 1,
+                "style": {"invert": True, "invert_scope": "all"},
+            },
+            "music": {"enabled": False, "track_id": "upbeat-energy", "target_volume_db": -18.0},
+            "rationale": {"hook": "test", "structure": []},
+        }
+        plan = EditPlan.model_validate(plan_data)
+        transcript = _make_transcript()
+
+        with tempfile.TemporaryDirectory() as td:
+            work = os.path.join(td, "work")
+            os.makedirs(work)
+            source_video = os.path.join(td, "source.mp4")
+            output_path = os.path.join(td, "output.mp4")
+            with open(source_video, "wb") as f:
+                f.write(b"\x00" * 1024)
+
+            with patch.object(rc, "_run_ffmpeg", side_effect=fake_run):
+                with patch("random.choices", return_value=[2]):
+                    try:
+                        rc.compile_render(plan, source_video, transcript, output_path, work_dir=work)
+                    except Exception:
+                        pass
+
+            fc_retry_path = os.path.join(work, "filter_complex_retry.txt")
+            self.assertTrue(os.path.exists(fc_retry_path), "filter_complex_retry.txt should exist")
+            with open(fc_retry_path) as f:
+                fc_retry = f.read()
+            self.assertRegex(fc_retry, r"color=black:s=1080x1920:r=30:d=\d+\.\d+")
+            self.assertIn("blend=all_mode=difference:shortest=1", fc_retry)
+
+    @patch("shutil.which", return_value=None)
+    @patch("random.choices", return_value=[2])
+    def test_emphasis_scope_also_bounded(self, _mock_choices, _mock_which):
+        """Invert with scope=emphasis must also have finite duration + shortest."""
+        fc, _ = self._run_compile_and_get_fc(
+            style={
+                "invert": True, "invert_scope": "emphasis",
+                "font_emphasis": "DejaVu Serif",
+                "pause_emphasis": {"enabled": True, "threshold_sec": 0.2},
+            },
+            transcript=_make_transcript_with_pause(),
+        )
+        self.assertIsNotNone(fc)
+        self.assertRegex(fc, r"color=black:s=1080x1920:r=30:d=\d+\.\d+")
+        self.assertIn("blend=all_mode=difference:shortest=1", fc)
+
+    @patch("shutil.which", return_value=None)
+    @patch("random.choices", return_value=[2])
+    def test_no_invert_no_color_black(self, _mock_choices, _mock_which):
+        """When invert is not set, filtergraph must NOT contain color=black."""
+        fc, _ = self._run_compile_and_get_fc(style={})
+        self.assertIsNotNone(fc)
+        self.assertNotIn("color=black", fc)
+        self.assertNotIn("blend=all_mode=difference", fc)
+
+
 if __name__ == "__main__":
     unittest.main()
