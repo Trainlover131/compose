@@ -1237,10 +1237,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{inv_pos}{plain_text}\n"
                     )
                 elif invert_scope == "emphasis" and apply_emph:
-                    # Only the emphasized word(s), white-only
+                    # Only the emphasized word(s) — must use the SAME emphasis
+                    # font/size as the main caption so glyph metrics match and
+                    # the invert mask overlays pixel-perfect.
                     last_word = chunk_words[-1]["word"].strip()
+                    if emphasis_font:
+                        inv_emph_tags = f"\\fn{emphasis_font}"
+                        if emph_size_mult > 1.0:
+                            inv_emph_tags = f"\\fs{emph_fontsize}{inv_emph_tags}"
+                        inv_word = f"{{{inv_emph_tags}}}{last_word}"
+                    else:
+                        inv_word = last_word
                     invert_dialogues.append(
-                        f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{inv_pos}{last_word}\n"
+                        f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{inv_pos}{inv_word}\n"
                     )
 
             pos_count += 1
@@ -1631,12 +1640,15 @@ def compile_render(
                 filters.append(
                     f"[_inv_black]ass={inv_ass_path}:fontsdir=/usr/share/fonts[_inv_text]"
                 )
-                # Force both inputs to same pixel format before blend to prevent color tint
-                filters.append(f"{last_label}format=rgba[_inv_base_rgba]")
-                filters.append(f"[_inv_text]format=rgba[_inv_mask_rgba]")
+                # Force both inputs to rgb24 (no alpha) before blend.
+                # blend=all_mode=difference on RGBA zeroes out alpha (|255-255|=0)
+                # which causes a green tint when encoded to H264. rgb24 has no
+                # alpha channel, so difference only operates on R,G,B.
+                filters.append(f"{last_label}format=rgb24[_inv_base_rgb]")
+                filters.append(f"[_inv_text]format=rgb24[_inv_mask_rgb]")
                 inv_blend_out = "_inv_blended"
                 filters.append(
-                    f"[_inv_base_rgba][_inv_mask_rgba]blend=all_mode=difference:shortest=1[{inv_blend_out}]"
+                    f"[_inv_base_rgb][_inv_mask_rgb]blend=all_mode=difference:shortest=1[{inv_blend_out}]"
                 )
                 last_label = f"[{inv_blend_out}]"
 
@@ -1802,10 +1814,10 @@ def compile_render(
                 if _invert_on_r:
                     filters_retry.append(f"color=black:s=1080x1920:r=30:d={_total_dur:.3f}[_inv_black_r]")
                     filters_retry.append(f"[_inv_black_r]ass={inv_ass_path}:fontsdir=/usr/share/fonts[_inv_text_r]")
-                    # Force both inputs to same pixel format before blend to prevent color tint
-                    filters_retry.append(f"{last_label_retry}format=rgba[_inv_base_rgba_r]")
-                    filters_retry.append(f"[_inv_text_r]format=rgba[_inv_mask_rgba_r]")
-                    filters_retry.append(f"[_inv_base_rgba_r][_inv_mask_rgba_r]blend=all_mode=difference:shortest=1[_inv_blended_r]")
+                    # Force both inputs to rgb24 (no alpha) before blend — see primary path comment
+                    filters_retry.append(f"{last_label_retry}format=rgb24[_inv_base_rgb_r]")
+                    filters_retry.append(f"[_inv_text_r]format=rgb24[_inv_mask_rgb_r]")
+                    filters_retry.append(f"[_inv_base_rgb_r][_inv_mask_rgb_r]blend=all_mode=difference:shortest=1[_inv_blended_r]")
                     last_label_retry = "[_inv_blended_r]"
                     if _inv_scope_r == "emphasis":
                         cap_out = "vcap"
