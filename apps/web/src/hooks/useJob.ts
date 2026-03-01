@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getJob, getRevision, type JobResponse, type RevisionSummary } from '@/lib/api'
 
-// Stop polling after 10 minutes to prevent infinite loops
-const POLL_TIMEOUT_MS = 10 * 60 * 1000
+// Stop polling after 20 minutes to prevent infinite loops
+const POLL_TIMEOUT_MS = 20 * 60 * 1000
 const POLL_INTERVAL_MS = 2000
 
 export function useJobPoller(jobId: string | null) {
