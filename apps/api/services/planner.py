@@ -124,7 +124,37 @@ PLANNER_SYSTEM_PROMPT = (
     "10. Set overlays.enabled=false and overlays.items=[] (overlays are "
     "handled separately).\n\n"
     "Available music tracks: upbeat-energy, cinematic-ambient, "
-    "clean-podcast, luxury-smooth, study-lofi"
+    "clean-podcast, luxury-smooth, study-lofi\n\n"
+    "REMOTION FULL-SCREEN INSERTS (motion graphics):\n"
+    "You may include up to 3 optional 'remotion_inserts' — full-screen "
+    "animated motion-graphics clips that REPLACE the base video for their "
+    "time window. These are SEPARATE from Pexels b-roll and image overlays.\n\n"
+    "RULES FOR remotion_inserts:\n"
+    "- If the user says 'no motion graphics', 'no remotion', or 'no animated "
+    "inserts': set remotion_inserts=[] (empty array).\n"
+    "- If the user says nothing about motion graphics: you MAY include 0–3 "
+    "inserts when transcript cues suggest them. Do not force them.\n"
+    "- If the user explicitly requests animated/motion graphics: create them.\n"
+    "- Each insert must be 2–6 seconds long.\n"
+    "- Inserts must NOT overlap with each other.\n"
+    "- Inserts must NOT overlap with b-roll windows.\n"
+    "- No more frequent than 1 every 8 seconds apart.\n"
+    "- Available template_ids: kpi-counter, line-chart, quote-highlight, "
+    "steps-list, profile-card, code-card, custom.\n\n"
+    "TEMPLATE TRIGGER HEURISTICS (use these cues from the transcript):\n"
+    "- Money/Revenue/ARR/Cost/Price numbers → kpi-counter or line-chart\n"
+    "- Percentages/Growth numbers → line-chart or kpi-counter\n"
+    "- 'steps / first second third / how it works' → steps-list\n"
+    "- Quote-like sentence → quote-highlight\n"
+    "- Person name + role/title → profile-card\n"
+    "- Code/engineer/technical mention → code-card\n\n"
+    "TEMPLATE PROPS:\n"
+    "- kpi-counter: {label, value, prefix?, suffix?, accentColor?, bg:\"dark\"|\"light\"}\n"
+    "- line-chart: {title, points:[{x,label?,y}], yLabel?, accentColor?, bg}\n"
+    "- quote-highlight: {quote, attribution?, accentColor?, bg, serif:boolean}\n"
+    "- steps-list: {title, steps:[string], accentColor?, bg}\n"
+    "- profile-card: {name, title?, bullets?:[string], accentColor?, bg}\n"
+    "- code-card: {title?, code, accentColor?, bg}\n"
 )
 
 EDIT_PLAN_SCHEMA = """{
@@ -201,6 +231,15 @@ EDIT_PLAN_SCHEMA = """{
     "track_id": "<string>",
     "target_volume_db": <float>
   },
+  "remotion_inserts": [
+    {
+      "start": "<float>",
+      "end": "<float>",
+      "template_id": "<kpi-counter|line-chart|quote-highlight|steps-list|profile-card|code-card|custom>",
+      "props": {},
+      "mode": "<default|custom>"
+    }
+  ],
   "rationale": {
     "hook": "<string>",
     "structure": ["<string>"]

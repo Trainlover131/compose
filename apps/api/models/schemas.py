@@ -177,6 +177,27 @@ class Rationale(BaseModel):
     structure: list[str] = []
 
 
+class RemotionInsert(BaseModel):
+    """A full-screen Remotion motion-graphics insert.
+
+    Separate asset type from Pexels b-roll and image overlays.
+    Replaces the base video for its time window.
+    """
+    start: float
+    end: float
+    template_id: str  # one of: kpi-counter, line-chart, quote-highlight, steps-list, profile-card, code-card, custom
+    props: dict = {}
+    mode: str = "default"  # "default" | "custom" (tracks user-requested)
+    asset_path: Optional[str] = None  # filled after rendering
+
+    @field_validator("end")
+    @classmethod
+    def end_after_start(cls, v: float, info) -> float:
+        if "start" in info.data and v <= info.data["start"]:
+            raise ValueError("end must be after start")
+        return v
+
+
 class EditPlan(BaseModel):
     version: str = "1"
     preset_id: str = "snappy-creator"
@@ -187,6 +208,7 @@ class EditPlan(BaseModel):
     overlays: OverlayConfig = OverlayConfig()
     captions: CaptionConfig = CaptionConfig()
     music: MusicConfig = MusicConfig()
+    remotion_inserts: list[RemotionInsert] = []
     rationale: Rationale = Rationale()
 
     @field_validator("main_cuts")
@@ -253,6 +275,10 @@ class TimingPatch(BaseModel):
     tightness: Optional[float] = Field(None, ge=0.5, le=1.5)
 
 
+class RemotionPatch(BaseModel):
+    enabled: Optional[bool] = None
+
+
 class PlanPatch(BaseModel):
     captions: Optional[CaptionPatch] = None
     music: Optional[MusicPatch] = None
@@ -260,6 +286,7 @@ class PlanPatch(BaseModel):
     punch_ins: Optional[PunchInPatch] = None
     output: Optional[OutputPatch] = None
     timing_adjustments: Optional[TimingPatch] = None
+    remotion: Optional[RemotionPatch] = None
 
 
 def apply_patch(plan: EditPlan, patch: PlanPatch) -> EditPlan:
@@ -324,6 +351,11 @@ def apply_patch(plan: EditPlan, patch: PlanPatch) -> EditPlan:
                             )
                         break
                 data["main_cuts"] = new_cuts
+
+    if patch.remotion:
+        patch_data = patch.remotion.model_dump(exclude_none=True)
+        if "enabled" in patch_data and not patch_data["enabled"]:
+            data["remotion_inserts"] = []
 
     return EditPlan.model_validate(data)
 

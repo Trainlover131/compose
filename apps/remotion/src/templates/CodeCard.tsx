@@ -1,0 +1,116 @@
+import React from "react";
+import { AbsoluteFill, useCurrentFrame, interpolate, Easing } from "remotion";
+import { FadeIn, SlideUp, MaskReveal } from "../components/AnimationPrimitives";
+import { FONTS, bgColor, fgColor, PALETTE } from "../design-system";
+
+export interface CodeCardProps {
+  title?: string;
+  code: string;
+  accentColor?: string;
+  bg?: "dark" | "light";
+}
+
+export const CodeCard: React.FC<CodeCardProps> = ({
+  title,
+  code,
+  accentColor = PALETTE.default_accent,
+  bg = "dark",
+}) => {
+  const background = bgColor(bg);
+  const foreground = fgColor(bg);
+  const frame = useCurrentFrame();
+
+  // Typewriter: reveal characters progressively
+  const lines = code.split("\n");
+  const totalChars = code.length;
+  const revealedChars = Math.round(
+    interpolate(frame, [10, Math.max(20, 10 + totalChars * 0.6)], [0, totalChars], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+      easing: Easing.out(Easing.cubic),
+    })
+  );
+
+  let charCount = 0;
+  const visibleLines = lines.map((line) => {
+    const lineStart = charCount;
+    charCount += line.length + 1; // +1 for newline
+    const visible = Math.max(0, Math.min(line.length, revealedChars - lineStart));
+    return line.substring(0, visible);
+  });
+
+  const codeBgColor = bg === "dark" ? "#1A1A2E" : "#F0F0F5";
+  const codeFrameColor = bg === "dark" ? "#2A2A3E" : "#E0E0E8";
+
+  return (
+    <AbsoluteFill
+      style={{
+        backgroundColor: background,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "0 100px",
+        fontFamily: FONTS.primary,
+      }}
+    >
+      {title && (
+        <FadeIn durationFrames={12}>
+          <h1
+            style={{
+              color: foreground,
+              fontSize: 44,
+              fontWeight: 700,
+              marginBottom: 32,
+              textAlign: "center",
+            }}
+          >
+            {title}
+          </h1>
+        </FadeIn>
+      )}
+
+      <SlideUp durationFrames={15} delay={6}>
+        <div
+          style={{
+            backgroundColor: codeBgColor,
+            border: `1px solid ${codeFrameColor}`,
+            borderRadius: 16,
+            padding: "40px 48px",
+            maxWidth: 1500,
+            width: "100%",
+          }}
+        >
+          {/* Window dots */}
+          <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+            <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#FF5F57" }} />
+            <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#FEBC2E" }} />
+            <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#28C840" }} />
+          </div>
+
+          <pre
+            style={{
+              fontFamily: FONTS.mono,
+              fontSize: 28,
+              lineHeight: 1.6,
+              color: foreground,
+              margin: 0,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+            }}
+          >
+            {visibleLines.map((line, i) => (
+              <React.Fragment key={i}>
+                <span style={{ color: PALETTE.muted, fontSize: 22, marginRight: 16 }}>
+                  {String(i + 1).padStart(2, " ")}
+                </span>
+                {line}
+                {"\n"}
+              </React.Fragment>
+            ))}
+          </pre>
+        </div>
+      </SlideUp>
+    </AbsoluteFill>
+  );
+};

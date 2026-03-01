@@ -581,6 +581,60 @@ def build_broll_filtergraph_entries(
 
     return filters, last_label, input_index
 
+
+def build_remotion_filtergraph_entries(
+    remotion_clips: list[dict],
+    input_index_start: int,
+    last_label: str,
+) -> tuple[list[str], str, int]:
+    """Build filter_complex entries for Remotion full-screen inserts.
+
+    Each Remotion clip REPLACES the base video for its time window.
+    Uses overlay with enable=between(t,start,end) to composite each
+    clip full-frame over the running chain.
+
+    Ordering: applied in chronological order. Later inserts do not
+    affect earlier windows.
+
+    Returns (filter_lines, final_last_label, next_input_index).
+    """
+    filters: list[str] = []
+    input_index = input_index_start
+
+    for idx, rc in enumerate(remotion_clips):
+        ri_idx = input_index
+        input_index += 1
+
+        prep_label = f"ri{idx}_prep"
+        out_label = f"ri{idx}_out"
+        dur = rc["end"] - rc["start"]
+
+        logger.info(
+            "Remotion filtergraph wiring: clip=%d start=%.3f end=%.3f input=%d",
+            idx, rc["start"], rc["end"], ri_idx,
+        )
+
+        # Prepare remotion clip: scale to 1080x1920 (cover mode: fit height, crop center)
+        # The remotion clip is authored 1920x1080 but final output is 9:16 (1080x1920).
+        # Cover: scale to fit height (1920), then center-crop to width (1080).
+        filters.append(
+            f"[{ri_idx}:v]trim=duration={dur:.3f},"
+            f"scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,"
+            f"setpts=PTS-STARTPTS+{rc['start']:.3f}/TB,"
+            f"tpad=stop_mode=clone:stop_duration={dur:.3f}[{prep_label}]"
+        )
+
+        # Overlay remotion clip full-frame onto running chain
+        filters.append(
+            f"{last_label}[{prep_label}]overlay="
+            f"enable=between(t\\,{rc['start']:.3f}\\,{rc['end']:.3f})[{out_label}]"
+        )
+        last_label = f"[{out_label}]"
+
+    return filters, last_label, input_index
+
+
 def _run_ffmpeg(cmd: list[str], step_name: str, timeout: int = 180) -> subprocess.CompletedProcess:
     """Run an FFmpeg command with proper error capture.
 
@@ -1502,8 +1556,22 @@ def compile_render(
     # Sort overlays by time (important for deterministic filter chain)
     overlay_items = sorted(overlay_items, key=lambda o: o["start"])
 
+    # Step 2.6: Collect Remotion full-screen inserts
+    remotion_clips = []
+    if hasattr(edit_plan, "remotion_inserts") and edit_plan.remotion_inserts:
+        for ri in edit_plan.remotion_inserts:
+            asset_path = getattr(ri, "asset_path", None)
+            if asset_path and Path(asset_path).exists():
+                remotion_clips.append({
+                    "path": asset_path,
+                    "start": float(ri.start),
+                    "end": float(ri.end),
+                })
+    remotion_clips = sorted(remotion_clips, key=lambda r: r["start"])
+
     logger.info(
         f"Render assets: broll={len(broll_segments)} overlays={len(overlay_items)} "
+        f"remotion={len(remotion_clips)} "
         f"(enabled={edit_plan.overlays.enabled if hasattr(edit_plan, 'overlays') else False})"
     )
     for i, o in enumerate(overlay_items[:8]):
@@ -1549,7 +1617,7 @@ def compile_render(
         has_invert_captions = Path(inv_ass_path).exists() and Path(inv_ass_path).stat().st_size > 100
 
     # If we have ANY visual layers to apply, do one filter_complex pass
-    if broll_clips or overlay_items or has_captions:
+    if broll_clips or overlay_items or remotion_clips or has_captions:
         layered_path = work / "layered.mp4"
         motion_enabled = True
 
@@ -1557,12 +1625,14 @@ def compile_render(
         # the black canvas for invert-blend so FFmpeg doesn't hang.
         _total_dur = sum(c.end - c.start for c in edit_plan.main_cuts)
 
-        # Inputs: base video first, then b-roll, then overlay images
+        # Inputs: base video first, then b-roll, then overlay images, then remotion clips
         inputs = ["-i", current_video]
         for bc in broll_clips:
             inputs.extend(["-i", bc["path"]])
         for oi in overlay_items:
             inputs.extend(["-i", oi["path"]])
+        for rc in remotion_clips:
+            inputs.extend(["-i", rc["path"]])
 
         filters = []
 
@@ -1622,6 +1692,16 @@ def compile_render(
                 f"enable=between(t\\,{oi['start']:.3f}\\,{oi['end']:.3f})[{out}]"
             )
             last_label = f"[{out}]"
+
+        # ---- REMOTION FULL-SCREEN INSERTS ----
+        # Each remotion clip replaces the base video for its time window.
+        # Applied AFTER b-roll + overlays, BEFORE captions.
+        remotion_filters, last_label, input_index = build_remotion_filtergraph_entries(
+            remotion_clips,
+            input_index,
+            last_label,
+        )
+        filters.extend(remotion_filters)
 
         # ---- CAPTIONS (ASS burn) ----
         if has_captions:
@@ -1817,6 +1897,14 @@ def compile_render(
                     f"enable=between(t\\,{oi['start']:.3f}\\,{oi['end']:.3f})[{out}]"
                 )
                 last_label_retry = f"[{out}]"
+
+            # ---- REMOTION FULL-SCREEN INSERTS (NO MOTION RETRY) ----
+            remotion_filters_retry, last_label_retry, input_index_retry = build_remotion_filtergraph_entries(
+                remotion_clips,
+                input_index_retry,
+                last_label_retry,
+            )
+            filters_retry.extend(remotion_filters_retry)
 
             # Save label before captions for potential no-caption fallback
             last_label_before_captions = last_label_retry
