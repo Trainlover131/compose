@@ -55,6 +55,13 @@ async function main() {
 
   const entryPoint = path.resolve(__dirname, "index.ts");
 
+  // Chromium flags for Docker / sandboxed environments
+  const chromiumOptions: Record<string, unknown> = {};
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    chromiumOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+  const chromeFlags = ["--no-sandbox", "--disable-dev-shm-usage"];
+
   // Step 1: Bundle the Remotion project
   console.log(`[remotion-render] Bundling ${entryPoint}...`);
   const bundleResult = await bundle({
@@ -68,6 +75,10 @@ async function main() {
   console.log(`[remotion-render] Getting compositions...`);
   const compositions = await getCompositions(bundleResult, {
     inputProps: config.props,
+    chromiumOptions: {
+      ...chromiumOptions,
+      args: chromeFlags,
+    } as any,
   });
 
   const comp = compositions.find((c) => c.id === config.composition);
@@ -99,6 +110,10 @@ async function main() {
     outputLocation: config.output,
     inputProps: config.props,
     timeoutInMilliseconds: config.timeoutMs,
+    chromiumOptions: {
+      ...chromiumOptions,
+      args: chromeFlags,
+    } as any,
     onProgress: ({ progress }: { progress: number }) => {
       if (Math.round(progress * 100) % 25 === 0) {
         console.log(`[remotion-render] Render progress: ${Math.round(progress * 100)}%`);
