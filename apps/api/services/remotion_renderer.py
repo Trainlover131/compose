@@ -170,7 +170,7 @@ def render_remotion_insert(
         )
 
         if result.returncode != 0:
-            stderr_tail = result.stderr[-500:] if result.stderr else ""
+            stderr_tail = result.stderr[-4000:] if result.stderr else ""
             telemetry["status"] = "render_failed"
             telemetry["error_reason"] = stderr_tail
             logger.error(
