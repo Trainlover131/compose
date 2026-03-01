@@ -6,7 +6,18 @@ Covers:
 - Render compiler: filtergraph includes remotion input + overlay/replace wiring
 - Render compiler: unchanged when remotion_inserts absent
 - Planner: system prompt includes remotion instructions
+- Worker pipeline: remotion inserts are validated, rendered, and have asset_path before compile_render
+- E2E visibility: remotion inserts produce visually different output frames
 """
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -524,3 +535,353 @@ class TestRemotionIntegrationVisibility:
         assert fc_with != fc_without, "Filtergraph must change when remotion inserts are present"
         assert "ri0_out" in fc_with
         assert "ri0_out" not in fc_without
+
+
+# ===================================================================
+# Worker pipeline wiring tests
+# ===================================================================
+
+def _can_import_worker() -> bool:
+    """Check if worker module can be imported (requires sqlalchemy etc)."""
+    try:
+        from apps.api.worker import _process_remotion_inserts  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+@pytest.mark.skipif(not _can_import_worker(), reason="Worker dependencies not available (sqlalchemy etc)")
+class TestWorkerRemotionWiring:
+    """Verify that _process_remotion_inserts correctly validates, renders, and
+    populates asset_path on remotion inserts before compile_render runs."""
+
+    def test_process_remotion_inserts_calls_validator_and_renderer(self):
+        """_process_remotion_inserts must call validate then render, and
+        update the EditPlan with asset_path-bearing inserts."""
+        from apps.api.worker import _process_remotion_inserts
+
+        plan = EditPlan(
+            main_cuts=[{"start": 0.0, "end": 30.0}],
+            remotion_inserts=[
+                {
+                    "start": 1.0,
+                    "end": 3.0,
+                    "template_id": "kpi-counter",
+                    "props": {"label": "TEST", "value": 123},
+                    "mode": "default",
+                },
+            ],
+        )
+
+        mock_db = MagicMock()
+        mock_job = MagicMock()
+        mock_job.edit_plan_json = plan.model_dump()
+
+        fake_asset = "/tmp/fake_remotion_asset.mp4"
+
+        with patch("apps.api.worker.validate_remotion_inserts") as mock_validate, \
+             patch("apps.api.worker.render_inserts_for_plan") as mock_render:
+
+            # validator returns the insert unchanged
+            mock_validate.return_value = (
+                [{"start": 1.0, "end": 3.0, "template_id": "kpi-counter", "props": {"label": "TEST", "value": 123}, "mode": "default"}],
+                [],  # adjusted b-roll
+                [],  # logs
+            )
+
+            # renderer returns insert with asset_path set
+            mock_render.return_value = [
+                {"start": 1.0, "end": 3.0, "template_id": "kpi-counter", "props": {"label": "TEST", "value": 123}, "mode": "default", "asset_path": fake_asset},
+            ]
+
+            # Create the fake asset file so path check passes
+            Path(fake_asset).touch()
+            try:
+                updated_plan = _process_remotion_inserts("test-job-id", mock_db, mock_job, plan)
+
+                mock_validate.assert_called_once()
+                mock_render.assert_called_once()
+
+                assert len(updated_plan.remotion_inserts) == 1
+                assert updated_plan.remotion_inserts[0].asset_path == fake_asset
+            finally:
+                Path(fake_asset).unlink(missing_ok=True)
+
+    def test_process_remotion_inserts_empty_list(self):
+        """When no remotion inserts in plan, _process_remotion_inserts is a no-op."""
+        from apps.api.worker import _process_remotion_inserts
+
+        plan = EditPlan(main_cuts=[{"start": 0.0, "end": 10.0}])
+
+        mock_db = MagicMock()
+        mock_job = MagicMock()
+
+        result = _process_remotion_inserts("test-job-id", mock_db, mock_job, plan)
+        assert result.remotion_inserts == []
+
+    def test_process_remotion_inserts_filters_failed_renders(self):
+        """Inserts where render fails (asset_path=None) are excluded from the updated plan."""
+        from apps.api.worker import _process_remotion_inserts
+
+        plan = EditPlan(
+            main_cuts=[{"start": 0.0, "end": 30.0}],
+            remotion_inserts=[
+                {"start": 1.0, "end": 3.0, "template_id": "kpi-counter", "props": {}, "mode": "default"},
+                {"start": 10.0, "end": 13.0, "template_id": "steps-list", "props": {}, "mode": "default"},
+            ],
+        )
+
+        mock_db = MagicMock()
+        mock_job = MagicMock()
+        mock_job.edit_plan_json = plan.model_dump()
+
+        fake_asset = "/tmp/fake_remotion_success.mp4"
+
+        with patch("apps.api.worker.validate_remotion_inserts") as mock_validate, \
+             patch("apps.api.worker.render_inserts_for_plan") as mock_render:
+
+            mock_validate.return_value = (
+                [
+                    {"start": 1.0, "end": 3.0, "template_id": "kpi-counter", "props": {}, "mode": "default"},
+                    {"start": 10.0, "end": 13.0, "template_id": "steps-list", "props": {}, "mode": "default"},
+                ],
+                [],
+                [],
+            )
+
+            # First insert succeeds, second fails
+            mock_render.return_value = [
+                {"start": 1.0, "end": 3.0, "template_id": "kpi-counter", "props": {}, "mode": "default", "asset_path": fake_asset},
+                {"start": 10.0, "end": 13.0, "template_id": "steps-list", "props": {}, "mode": "default", "asset_path": None},
+            ]
+
+            Path(fake_asset).touch()
+            try:
+                updated_plan = _process_remotion_inserts("test-job-id", mock_db, mock_job, plan)
+
+                # Only the successful one survives
+                assert len(updated_plan.remotion_inserts) == 1
+                assert updated_plan.remotion_inserts[0].template_id == "kpi-counter"
+            finally:
+                Path(fake_asset).unlink(missing_ok=True)
+
+
+# ===================================================================
+# E2E visibility test (requires FFmpeg)
+# ===================================================================
+
+def _has_ffmpeg() -> bool:
+    """Check if ffmpeg is available on the system."""
+    try:
+        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _generate_test_video(path: str, duration: float = 5.0, color: str = "blue"):
+    """Generate a solid-color test video using FFmpeg."""
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i",
+            f"color=c={color}:s=1080x1920:d={duration}:r=30",
+            "-f", "lavfi", "-i",
+            f"anullsrc=r=44100:cl=stereo",
+            "-t", str(duration),
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "64k",
+            "-shortest",
+            path,
+        ],
+        capture_output=True,
+        timeout=30,
+        check=True,
+    )
+
+
+def _generate_remotion_dummy(path: str, duration: float = 2.0, color: str = "red"):
+    """Generate a dummy 'remotion insert' clip (solid red) for testing."""
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i",
+            f"color=c={color}:s=1080x1920:d={duration}:r=30",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-pix_fmt", "yuv420p",
+            path,
+        ],
+        capture_output=True,
+        timeout=30,
+        check=True,
+    )
+
+
+def _extract_frame_hash(video_path: str, timestamp: float) -> str:
+    """Extract a single frame at the given timestamp and return its MD5 hash."""
+    frame_path = video_path.replace(".mp4", f"_frame_{timestamp:.1f}.raw")
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-ss", f"{timestamp:.3f}",
+            "-i", video_path,
+            "-frames:v", "1",
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            frame_path,
+        ],
+        capture_output=True,
+        timeout=10,
+        check=True,
+    )
+    data = Path(frame_path).read_bytes()
+    Path(frame_path).unlink(missing_ok=True)
+    return hashlib.md5(data).hexdigest()
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="FFmpeg not available")
+class TestRemotionE2EVisibility:
+    """End-to-end test: a remotion insert at t=1.0-3.0 must produce
+    visually different frames compared to a render without inserts.
+
+    Uses solid-color clips so no Remotion CLI is needed — we test
+    the FFmpeg filter pipeline directly.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_work_dir(self, tmp_path):
+        self.work = tmp_path
+        self.source_video = str(self.work / "source.mp4")
+        self.remotion_clip = str(self.work / "remotion_insert.mp4")
+        self.output_with = str(self.work / "output_with_remotion.mp4")
+        self.output_without = str(self.work / "output_without_remotion.mp4")
+
+        # Generate a 5s blue source video
+        _generate_test_video(self.source_video, duration=5.0, color="blue")
+        # Generate a 2s red "remotion insert" clip
+        _generate_remotion_dummy(self.remotion_clip, duration=2.0, color="red")
+
+    def test_remotion_insert_changes_frame_at_insert_window(self):
+        """Frame at t=2.0 must differ between render-with-remotion and render-without."""
+
+        # Build a minimal EditPlan with a remotion insert at 1.0-3.0
+        plan_with = EditPlan(
+            main_cuts=[{"start": 0.0, "end": 5.0}],
+            remotion_inserts=[
+                {
+                    "start": 1.0,
+                    "end": 3.0,
+                    "template_id": "kpi-counter",
+                    "props": {"label": "TEST INSERT", "value": 123},
+                    "mode": "default",
+                    "asset_path": self.remotion_clip,
+                },
+            ],
+        )
+        plan_without = EditPlan(
+            main_cuts=[{"start": 0.0, "end": 5.0}],
+        )
+
+        # Build filter_complex WITH remotion
+        filters_with = ["[0:v]setpts=PTS-STARTPTS[base]"]
+        last_label = "[base]"
+        input_index = 1
+
+        remotion_clips = [
+            {"path": self.remotion_clip, "start": 1.0, "end": 3.0},
+        ]
+        ri_filters, last_label, input_index = build_remotion_filtergraph_entries(
+            remotion_clips, input_index, last_label,
+        )
+        filters_with.extend(ri_filters)
+
+        fc_with = ";".join(filters_with)
+        fc_with = _sanitize_fc(fc_with)
+        map_v_with = last_label
+
+        # Render WITH remotion
+        cmd_with = [
+            "ffmpeg", "-y",
+            "-i", self.source_video,
+            "-i", self.remotion_clip,
+            "-filter_complex", fc_with,
+            "-map", map_v_with, "-map", "0:a?",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "64k",
+            self.output_with,
+        ]
+        result = subprocess.run(cmd_with, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, f"FFmpeg with remotion failed: {result.stderr[-500:]}"
+
+        # Render WITHOUT remotion (just copy source)
+        cmd_without = [
+            "ffmpeg", "-y",
+            "-i", self.source_video,
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "64k",
+            self.output_without,
+        ]
+        result = subprocess.run(cmd_without, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, f"FFmpeg without remotion failed: {result.stderr[-500:]}"
+
+        # Extract frames at t=2.0 (inside insert window) — must differ
+        hash_with = _extract_frame_hash(self.output_with, 2.0)
+        hash_without = _extract_frame_hash(self.output_without, 2.0)
+
+        assert hash_with != hash_without, (
+            "Frame at t=2.0 must differ: remotion insert (red) should replace base (blue). "
+            f"Got identical hashes: {hash_with}"
+        )
+
+    def test_remotion_insert_does_not_affect_outside_window(self):
+        """Frame at t=0.5 (outside insert window) should be the same base video."""
+
+        remotion_clips = [
+            {"path": self.remotion_clip, "start": 1.0, "end": 3.0},
+        ]
+
+        # Build filter_complex
+        filters = ["[0:v]setpts=PTS-STARTPTS[base]"]
+        last_label = "[base]"
+        ri_filters, last_label, _ = build_remotion_filtergraph_entries(
+            remotion_clips, 1, last_label,
+        )
+        filters.extend(ri_filters)
+        fc = _sanitize_fc(";".join(filters))
+
+        # Render with remotion
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", self.source_video,
+            "-i", self.remotion_clip,
+            "-filter_complex", fc,
+            "-map", last_label, "-map", "0:a?",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "64k",
+            self.output_with,
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=30, check=True)
+
+        # Render without remotion
+        cmd_without = [
+            "ffmpeg", "-y",
+            "-i", self.source_video,
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "64k",
+            self.output_without,
+        ]
+        subprocess.run(cmd_without, capture_output=True, timeout=30, check=True)
+
+        # Frame at t=0.5 (outside window) should be identical (both blue)
+        hash_with = _extract_frame_hash(self.output_with, 0.5)
+        hash_without = _extract_frame_hash(self.output_without, 0.5)
+
+        assert hash_with == hash_without, (
+            "Frame at t=0.5 (outside insert window) should be identical base video. "
+            f"With: {hash_with}, Without: {hash_without}"
+        )

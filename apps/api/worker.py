@@ -14,6 +14,8 @@ from apps.api.models.schemas import EditPlan
 from apps.api.services.patcher import apply_edit
 from apps.api.services.pexels import fetch_broll_for_plan
 from apps.api.services.planner import plan_edit
+from apps.api.services.remotion_renderer import render_inserts_for_plan
+from apps.api.services.remotion_validator import validate_remotion_inserts
 from apps.api.services.render_compiler import compile_render
 from apps.api.services.storage import storage
 from apps.api.services.transcribe import analyze_video
@@ -77,6 +79,75 @@ def _fail_job(db, job_id: str, error_msg: str, error_trace: str = ""):
             db.rollback()
         except Exception:
             pass
+
+
+def _process_remotion_inserts(job_id: str, db, job: Job, edit_plan: EditPlan) -> EditPlan:
+    """Validate and render Remotion inserts, returning an updated EditPlan.
+
+    Stages:
+    1. Validate inserts (clamp durations, resolve overlaps with b-roll)
+    2. Render each insert via Remotion CLI → populate asset_path
+    3. Update the EditPlan with validated + rendered inserts
+    """
+    remotion_raw = [ri.model_dump() for ri in edit_plan.remotion_inserts] if edit_plan.remotion_inserts else []
+    logger.info("Remotion inserts planned: %d", len(remotion_raw))
+
+    if not remotion_raw:
+        return edit_plan
+
+    stage_start = time.monotonic()
+    _log_stage(job_id, "remotion", "start")
+
+    # Step 1: Validate
+    broll_data = [i.model_dump() for i in edit_plan.broll.inserts] if edit_plan.broll.enabled and edit_plan.broll.inserts else []
+    total_duration = sum(c.end - c.start for c in edit_plan.main_cuts) if edit_plan.main_cuts else 0.0
+
+    validated_inserts, adjusted_broll, validation_logs = validate_remotion_inserts(
+        remotion_raw, broll_data, total_duration,
+    )
+    kept = len(validated_inserts)
+    dropped = len(remotion_raw) - kept
+    logger.info("Remotion inserts validated: kept=%d dropped=%d", kept, dropped)
+    for msg in validation_logs:
+        logger.info("RemotionValidation: %s", msg)
+
+    if not validated_inserts:
+        _log_stage(job_id, "remotion", "done_empty", elapsed_ms=int((time.monotonic() - stage_start) * 1000))
+        return edit_plan
+
+    # Step 2: Render inserts to MP4
+    work_dir = str(Path("/tmp") / "compose_outputs" / job_id)
+    Path(work_dir).mkdir(parents=True, exist_ok=True)
+
+    rendered_inserts = render_inserts_for_plan(validated_inserts, work_dir)
+
+    rendered_count = sum(1 for ri in rendered_inserts if ri.get("asset_path"))
+    cached_count = 0  # render_inserts_for_plan logs cache hits internally
+    failed_count = sum(1 for ri in rendered_inserts if not ri.get("asset_path"))
+    logger.info(
+        "Remotion inserts rendered: rendered=%d cached=%d failed=%d",
+        rendered_count, cached_count, failed_count,
+    )
+
+    # Filter to only inserts that have a valid asset_path
+    successful_inserts = [ri for ri in rendered_inserts if ri.get("asset_path") and Path(ri["asset_path"]).exists()]
+    logger.info("Remotion inserts with asset_path: %d", len(successful_inserts))
+
+    # Step 3: Update EditPlan with rendered inserts + adjusted b-roll
+    plan_data = edit_plan.model_dump()
+    plan_data["remotion_inserts"] = successful_inserts
+    if adjusted_broll is not None and edit_plan.broll.enabled:
+        plan_data["broll"]["inserts"] = adjusted_broll
+    edit_plan = EditPlan.model_validate(plan_data)
+
+    # Persist updated plan
+    job.edit_plan_json = edit_plan.model_dump()
+    db.commit()
+
+    elapsed = int((time.monotonic() - stage_start) * 1000)
+    _log_stage(job_id, "remotion", "done", elapsed_ms=elapsed)
+
+    return edit_plan
 
 
 def process_job(job_id: str):
@@ -157,6 +228,9 @@ def process_job(job_id: str):
             _log_stage(job_id, "broll", "done", elapsed_ms=elapsed)
         else:
             _log_stage(job_id, "broll", "skipped")
+
+        # Step 3b: Validate + render Remotion inserts
+        edit_plan = _process_remotion_inserts(job_id, db, job, edit_plan)
 
         # Step 4: Render
         _set_progress(db, job, "rendering")
@@ -265,6 +339,9 @@ def process_revision(job_id: str, revision_id: str):
                     if upd.get("asset_path"):
                         orig["asset_path"] = upd["asset_path"]
                 new_plan = EditPlan.model_validate(plan_data)
+
+        # Validate + render Remotion inserts for revision
+        new_plan = _process_remotion_inserts(job_id, db, job, new_plan)
 
         # Re-render
         output_key = f"outputs/{job_id}/v{revision.revision_number + 1}.mp4"
