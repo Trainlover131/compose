@@ -1189,6 +1189,206 @@ def _log_debug_scheduling(
 
 
 # ===================================================================
+# Remotion insert policy — deterministic fallback
+# ===================================================================
+
+_REMOTION_OPT_OUT_PHRASES = [
+    "no motion graphics",
+    "no remotion",
+    "no animated inserts",
+    "no animated graphics",
+    "disable remotion",
+    "without motion graphics",
+    "skip remotion",
+]
+
+MIN_DURATION_FOR_REMOTION = 20.0  # seconds — don't add inserts to very short videos
+
+
+def _user_opted_out_of_remotion(prompt: str) -> bool:
+    """Check if the user explicitly opted out of remotion inserts."""
+    lower = prompt.lower()
+    for phrase in _REMOTION_OPT_OUT_PHRASES:
+        if phrase in lower:
+            return True
+    return False
+
+
+def _pick_best_quote(transcript: dict, plan_cuts: list, broll_windows: list) -> dict | None:
+    """Pick the most interesting quote from the transcript for a fallback insert.
+
+    Returns a dict with start, end, quote text, or None if not possible.
+    """
+    segments = transcript.get("segments", [])
+    if not segments:
+        return None
+
+    # Build final-timeline windows from main_cuts
+    final_windows = []
+    final_offset = 0.0
+    for cut in plan_cuts:
+        s = cut.get("start", 0) if isinstance(cut, dict) else cut.start
+        e = cut.get("end", 0) if isinstance(cut, dict) else cut.end
+        dur = e - s
+        final_windows.append({
+            "orig_start": s,
+            "orig_end": e,
+            "final_start": final_offset,
+            "final_end": final_offset + dur,
+        })
+        final_offset += dur
+
+    total_duration = final_offset
+    if total_duration < MIN_DURATION_FOR_REMOTION:
+        return None
+
+    # Collect candidate sentences from transcript that fall within cuts
+    candidates = []
+    for seg in segments:
+        seg_text = seg.get("text", "").strip()
+        seg_start = seg.get("start", 0)
+        seg_end = seg.get("end", 0)
+
+        # Must be within a main_cut
+        for w in final_windows:
+            if seg_start >= w["orig_start"] and seg_end <= w["orig_end"]:
+                final_s = w["final_start"] + (seg_start - w["orig_start"])
+                final_e = w["final_start"] + (seg_end - w["orig_start"])
+                # Prefer segments in the middle third of the video
+                mid_bonus = 1.0
+                mid = (final_s + final_e) / 2
+                if total_duration / 3 < mid < 2 * total_duration / 3:
+                    mid_bonus = 1.5
+                candidates.append({
+                    "text": seg_text,
+                    "final_start": final_s,
+                    "final_end": final_e,
+                    "score": len(seg_text) * mid_bonus,  # longer + middle = better
+                })
+                break
+
+    if not candidates:
+        return None
+
+    # Sort by score descending, pick best
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+    best = candidates[0]
+
+    # Place the insert so it doesn't overlap with b-roll
+    insert_start = best["final_start"]
+    insert_end = min(best["final_end"], insert_start + 4.0)  # 4s max
+    insert_dur = insert_end - insert_start
+    if insert_dur < 2.0:
+        insert_end = insert_start + 2.0  # minimum 2s
+
+    # Check overlap with b-roll windows
+    for bw in broll_windows:
+        bs = bw.get("start", 0) if isinstance(bw, dict) else bw.start
+        be = bw.get("end", 0) if isinstance(bw, dict) else bw.end
+        if insert_start < be and insert_end > bs:
+            # Overlaps — shift after b-roll window
+            insert_start = be + 0.5
+            insert_end = insert_start + 4.0
+
+    # Ensure within total duration
+    if insert_end > total_duration:
+        insert_end = total_duration
+        insert_start = max(0.0, insert_end - 4.0)
+        if insert_end - insert_start < 2.0:
+            return None
+
+    return {
+        "start": round(insert_start, 3),
+        "end": round(insert_end, 3),
+        "text": best["text"],
+    }
+
+
+def _ensure_remotion_inserts(
+    plan: "EditPlan", prompt: str, transcript: dict
+) -> "EditPlan":
+    """Deterministic policy: ensure at least 1 remotion insert when appropriate.
+
+    Gates (any blocks insertion):
+    - User opted out via prompt phrases
+    - Total duration < 20s
+    - Plan already has remotion inserts
+
+    If none of those gates apply, synthesize a quote-highlight insert from
+    the transcript.
+    """
+    # Gate 1: already has inserts
+    if plan.remotion_inserts:
+        logger.info(
+            "Remotion policy: LLM provided %d inserts, keeping them",
+            len(plan.remotion_inserts),
+        )
+        return plan
+
+    # Gate 2: user opted out
+    if _user_opted_out_of_remotion(prompt):
+        logger.info(
+            "Remotion policy: user opted out (prompt=%r), skipping inserts",
+            prompt[:100],
+        )
+        return plan
+
+    # Gate 3: video too short
+    total_duration = plan.total_duration() if hasattr(plan, "total_duration") else sum(
+        c.end - c.start for c in plan.main_cuts
+    )
+    if total_duration < MIN_DURATION_FOR_REMOTION:
+        logger.info(
+            "Remotion policy: duration %.1fs < %.1fs threshold, skipping inserts",
+            total_duration,
+            MIN_DURATION_FOR_REMOTION,
+        )
+        return plan
+
+    # Build b-roll windows for overlap check
+    broll_windows = []
+    if plan.broll.enabled and plan.broll.inserts:
+        broll_windows = [{"start": i.start, "end": i.end} for i in plan.broll.inserts]
+
+    # Pick a quote from the transcript
+    main_cuts_data = [{"start": c.start, "end": c.end} for c in plan.main_cuts]
+    quote_info = _pick_best_quote(transcript, main_cuts_data, broll_windows)
+
+    if not quote_info:
+        logger.warning(
+            "Remotion policy: could not find suitable quote in transcript "
+            "(duration=%.1fs, segments=%d), skipping inserts",
+            total_duration,
+            len(transcript.get("segments", [])),
+        )
+        return plan
+
+    # Synthesize a quote-highlight insert
+    fallback_insert = {
+        "start": quote_info["start"],
+        "end": quote_info["end"],
+        "template_id": "quote-highlight",
+        "props": {
+            "quote": quote_info["text"][:120],
+            "bg": "dark",
+        },
+        "mode": "default",
+    }
+
+    logger.info(
+        "Remotion policy: injecting fallback quote-highlight insert at "
+        "%.1f-%.1fs (quote=%r)",
+        fallback_insert["start"],
+        fallback_insert["end"],
+        quote_info["text"][:60],
+    )
+
+    plan_data = plan.model_dump()
+    plan_data["remotion_inserts"] = [fallback_insert]
+    return EditPlan.model_validate(plan_data)
+
+
+# ===================================================================
 # Main entry point — Pass 1 (Claude) + VisualDirector (Gemini)
 # ===================================================================
 
@@ -1235,7 +1435,14 @@ def plan_edit(
         f"(b-roll timing will be added separately).\n"
         f"Set overlays.enabled=false and overlays.items=[] "
         f"(overlays will be added separately).\n"
-        f"Focus on main_cuts, punch_ins, captions, and music.\n\n"
+        f"Focus on main_cuts, punch_ins, captions, music, AND "
+        f"remotion_inserts.\n\n"
+        f"REMOTION INSERTS: Unless the user explicitly opts out (says "
+        f"'no motion graphics' / 'no remotion' / 'no animated inserts'), "
+        f"you MUST include at least 1 remotion insert when the video "
+        f"duration is >= 20 seconds. Pick the best-matching template_id "
+        f"based on transcript cues. If no obvious cue, default to "
+        f"'quote-highlight' using a memorable sentence from the transcript.\n\n"
         f"Generate the EditPlan JSON now. Remember: ONLY valid JSON, "
         f"no markdown."
     )
@@ -1374,6 +1581,17 @@ def plan_edit(
     plan = EditPlan.model_validate(plan_dict)
 
     # ---------------------------------------------------------------
+    # Remotion insert policy: ensure >= 1 when not opted out
+    # ---------------------------------------------------------------
+    plan = _ensure_remotion_inserts(plan, prompt, transcript)
+
+    logger.info(
+        "Remotion inserts after planning: count=%d templates=%s",
+        len(plan.remotion_inserts),
+        [ri.template_id for ri in plan.remotion_inserts],
+    )
+
+    # ---------------------------------------------------------------
     # Debug logging for first 3 b-roll + overlays
     # ---------------------------------------------------------------
     _log_debug_scheduling(broll_inserts, overlay_items, transcript)
@@ -1385,9 +1603,10 @@ def plan_edit(
         _generate_overlay_assets(plan)
 
     logger.info(
-        "Final plan: %d cuts, %d punch-ins, %d b-roll, %d overlays",
+        "Final plan: %d cuts, %d punch-ins, %d b-roll, %d overlays, %d remotion",
         len(plan.main_cuts), len(plan.punch_ins),
         len(plan.broll.inserts), len(plan.overlays.items),
+        len(plan.remotion_inserts),
     )
     return plan
 
@@ -1675,6 +1894,27 @@ def _demo_plan(
 
     cap_style = config["caption_style"]
 
+    # Generate a remotion insert for demo mode if duration is sufficient
+    demo_remotion_inserts = []
+    demo_total = sum(c["end"] - c["start"] for c in final_cuts)
+    if demo_total >= MIN_DURATION_FOR_REMOTION and segments:
+        # Pick a segment from the middle third
+        mid_segs = [
+            s for s in segments
+            if demo_total / 3 < (s["start"] + s["end"]) / 2 < 2 * demo_total / 3
+        ]
+        quote_seg = (mid_segs or segments)[0]
+        ins_start = max(0.0, quote_seg["start"])
+        ins_end = min(ins_start + 4.0, demo_total)
+        if ins_end - ins_start >= 2.0:
+            demo_remotion_inserts.append({
+                "start": round(ins_start, 3),
+                "end": round(ins_end, 3),
+                "template_id": "quote-highlight",
+                "props": {"quote": quote_seg.get("text", "")[:120], "bg": "dark"},
+                "mode": "default",
+            })
+
     return EditPlan.model_validate({
         "version": "1",
         "preset_id": preset_id,
@@ -1705,6 +1945,7 @@ def _demo_plan(
             "track_id": config["default_music_track"],
             "target_volume_db": -18.0,
         },
+        "remotion_inserts": demo_remotion_inserts,
         "rationale": {
             "hook": "Demo mode: rule-based editing with silence removal",
             "structure": [

@@ -86,7 +86,7 @@ def _process_remotion_inserts(job_id: str, db, job: Job, edit_plan: EditPlan) ->
 
     Stages:
     1. Validate inserts (clamp durations, resolve overlaps with b-roll)
-    2. Render each insert via Remotion CLI → populate asset_path
+    2. Render each insert via Remotion CLI -> populate asset_path
     3. Update the EditPlan with validated + rendered inserts
     """
     remotion_raw = [ri.model_dump() for ri in edit_plan.remotion_inserts] if edit_plan.remotion_inserts else []
@@ -122,11 +122,10 @@ def _process_remotion_inserts(job_id: str, db, job: Job, edit_plan: EditPlan) ->
     rendered_inserts = render_inserts_for_plan(validated_inserts, work_dir)
 
     rendered_count = sum(1 for ri in rendered_inserts if ri.get("asset_path"))
-    cached_count = 0  # render_inserts_for_plan logs cache hits internally
     failed_count = sum(1 for ri in rendered_inserts if not ri.get("asset_path"))
     logger.info(
-        "Remotion inserts rendered: rendered=%d cached=%d failed=%d",
-        rendered_count, cached_count, failed_count,
+        "Remotion inserts rendered: rendered=%d failed=%d",
+        rendered_count, failed_count,
     )
 
     # Filter to only inserts that have a valid asset_path
