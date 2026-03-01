@@ -139,19 +139,18 @@ def render_remotion_insert(
         output_path = str(cached)
         props_json = json.dumps(props, separators=(",", ":"))
         duration_frames = int(duration_sec * fps)
-        
+
+        remotion_bin = _REMOTION_DIR / "node_modules" / ".bin" / "remotion"
+
         cmd = [
-            "npx",
-            "--yes",
-            "--package",
-            "@remotion/cli@4.0.0",
-            "remotion",
+            str(remotion_bin),
             "render",
             str(_RENDER_ENTRY),
             template_id,
             output_path,
             f"--props={props_json}",
             f"--frames=0-{duration_frames - 1}",
+            '--chromium-flags=--no-sandbox --disable-dev-shm-usage',
         ]
 
         logger.info(
