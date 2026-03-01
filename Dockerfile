@@ -1,7 +1,6 @@
 FROM python:3.12-slim
 
-# Install FFmpeg + ASS deps + faster-whisper native runtime deps
-# Keep minimal system fonts only (dejavu, liberation, noto-core, noto-emoji)
+# System deps: ffmpeg, fonts, chromium + runtime libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libass-dev \
@@ -15,7 +14,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     frei0r-plugins \
     ca-certificates \
     gnupg \
-    && rm -rf /var/lib/apt/lists/*
+    chromium \
+    libnss3 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpangocairo-1.0-0 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libgtk-3-0 \
+    libx11-xcb1 \
+    libxcb1 \
+    libx11-6 \
+  && rm -rf /var/lib/apt/lists/*
+
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 
 # Install modern Node.js (includes npm+npx)
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
