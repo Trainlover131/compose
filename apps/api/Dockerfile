@@ -9,12 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-dejavu-core \
     fonts-noto-core \
     fonts-noto-color-emoji \
-    curl \
-    libgomp1 \
-    libstdc++6 \
     frei0r-plugins \
     nodejs \
     npm \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Custom fonts from assets/fonts/ (Playfair Display, etc.)
