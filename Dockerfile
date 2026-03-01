@@ -13,9 +13,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     libstdc++6 \
     frei0r-plugins \
-    nodejs \
-    npm \
+    ca-certificates \
+    gnupg \
     && rm -rf /var/lib/apt/lists/*
+
+# Install modern Node.js (includes npm+npx)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+  && apt-get update && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/*
+
+# (Optional) sanity check during build
+RUN node -v && npm -v && npx -v
 
 # Custom fonts from assets/fonts/ (Playfair Display, etc.)
 RUN mkdir -p /usr/local/share/fonts/custom
