@@ -37,6 +37,11 @@ RUN python -c "import open_clip; print('open_clip import OK')"
 COPY apps/ /app/apps/
 COPY assets/ /app/assets/
 
+# Install Remotion workspace deps (required for npx/remotion renders)
+WORKDIR /app/apps/remotion
+RUN npm ci
+WORKDIR /app
+
 # Create local storage directory
 RUN mkdir -p /data/storage
 
