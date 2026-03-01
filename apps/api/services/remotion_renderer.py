@@ -135,29 +135,28 @@ def render_remotion_insert(
             logger.info("Remotion cache hit: %s -> %s", key, cached)
             return str(cached)
 
-        # Render via CLI (npx remotion render)
+        # Render via Node.js API (tsx render-entry.ts)
         output_path = str(cached)
         props_json = json.dumps(props, separators=(",", ":"))
-        duration_frames = int(duration_sec * fps)
 
-        remotion_bin = _REMOTION_DIR / "node_modules" / ".bin" / "remotion"
+        tsx_bin = _REMOTION_DIR / "node_modules" / ".bin" / "tsx"
 
         cmd = [
-            str(remotion_bin),
-            "render",
+            str(tsx_bin),
             str(_RENDER_ENTRY),
-            template_id,
-            output_path,
-            f"--props={props_json}",
-            f"--frames=0-{duration_frames - 1}",
-            '--chromium-flags=--no-sandbox --disable-dev-shm-usage',
+            "--composition", template_id,
+            "--props", props_json,
+            "--duration", str(round(duration_sec, 3)),
+            "--output", output_path,
+            "--fps", str(fps),
+            "--width", str(width),
+            "--height", str(height),
         ]
 
         logger.info(
-            "Remotion render start: template=%s duration=%.1fs frames=%d output=%s",
+            "Remotion render start: template=%s duration=%.1fs output=%s",
             template_id,
             duration_sec,
-            duration_frames,
             output_path,
         )
 
