@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     libstdc++6 \
     frei0r-plugins \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Custom fonts from assets/fonts/ (Playfair Display, etc.)
