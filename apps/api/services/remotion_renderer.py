@@ -139,11 +139,13 @@ def render_remotion_insert(
         output_path = str(cached)
         props_json = json.dumps(props, separators=(",", ":"))
         duration_frames = int(duration_sec * fps)
-
+        
         cmd = [
             "npx",
             "--yes",
-            "@remotion/cli@latest",
+            "--package",
+            "@remotion/cli@4.0.0",
+            "remotion",
             "render",
             str(_RENDER_ENTRY),
             template_id,
