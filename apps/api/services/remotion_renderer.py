@@ -141,7 +141,10 @@ def render_remotion_insert(
         duration_frames = int(duration_sec * fps)
 
         cmd = [
-            "npx", "remotion", "render",
+            "npx",
+            "--yes",
+            "@remotion/cli@latest",
+            "render",
             str(_RENDER_ENTRY),
             template_id,
             output_path,
