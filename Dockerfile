@@ -16,14 +16,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     chromium \
     libnss3 \
+    libnspr4 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
+    libatspi2.0-0 \
     libcups2 \
     libxkbcommon0 \
     libxcomposite1 \
     libxdamage1 \
     libxrandr2 \
     libgbm1 \
+    libdrm2 \
     libasound2 \
     libpangocairo-1.0-0 \
     libpango-1.0-0 \
@@ -32,7 +35,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libx11-xcb1 \
     libxcb1 \
     libx11-6 \
-  && rm -rf /var/lib/apt/lists/*
+    libxext6 \
+    libxfixes3 \
+    libxrender1 \
+    libxi6 \
+    libglib2.0-0 \
+    libdbus-1-3 \
+    libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PUPPETEER_SKIP_DOWNLOAD=true
