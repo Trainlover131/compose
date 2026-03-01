@@ -1569,16 +1569,27 @@ def compile_render(
                 })
     remotion_clips = sorted(remotion_clips, key=lambda r: r["start"])
 
+    _ri_total = len(edit_plan.remotion_inserts) if hasattr(edit_plan, "remotion_inserts") and edit_plan.remotion_inserts else 0
+    _ri_with_path = sum(
+        1 for ri in (edit_plan.remotion_inserts or [])
+        if getattr(ri, "asset_path", None) and Path(getattr(ri, "asset_path", "")).exists()
+    ) if _ri_total else 0
     logger.info(
         f"Render assets: broll={len(broll_segments)} overlays={len(overlay_items)} "
         f"remotion={len(remotion_clips)} "
-        f"(enabled={edit_plan.overlays.enabled if hasattr(edit_plan, 'overlays') else False})"
+        f"(remotion_planned={_ri_total} remotion_with_asset={_ri_with_path} "
+        f"overlays_enabled={edit_plan.overlays.enabled if hasattr(edit_plan, 'overlays') else False})"
     )
     for i, o in enumerate(overlay_items[:8]):
         logger.info(
             f"Overlay[{i}] start={o['start']:.3f} end={o['end']:.3f} "
             f"w={o['w']:.2f} x={o['x']:.2f} y={o['y']:.2f} path={o['path']} "
             f"exists={Path(o['path']).exists()}"
+        )
+    for i, rc in enumerate(remotion_clips[:8]):
+        logger.info(
+            f"Remotion[{i}] start={rc['start']:.3f} end={rc['end']:.3f} "
+            f"path={rc['path']} exists={Path(rc['path']).exists()}"
         )
 
     # Step 3: Build concat list
