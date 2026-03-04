@@ -264,3 +264,92 @@ export const SubtleRotate3D: React.FC<{
     </div>
   );
 };
+
+// ═══════════════════════════════════════════════════════════════════
+// PRO OVERLAYS — layered on top of every scene for production feel
+// ═══════════════════════════════════════════════════════════════════
+
+// ── FilmGrain (SVG noise overlay for texture) ───────────────────────
+export const FilmGrain: React.FC<{
+  opacity?: number;
+}> = ({ opacity = 0.04 }) => {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: "none",
+        opacity,
+        backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='1'/%3E%3C/svg%3E")`,
+        backgroundRepeat: "repeat",
+        backgroundSize: "256px 256px",
+        mixBlendMode: "overlay",
+      }}
+    />
+  );
+};
+
+// ── Vignette (edge darkening for focus) ─────────────────────────────
+export const Vignette: React.FC<{
+  intensity?: number;
+}> = ({ intensity = 0.55 }) => {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: "none",
+        background: `radial-gradient(ellipse 80% 80% at 50% 50%, transparent 50%, rgba(0,0,0,${intensity}) 100%)`,
+      }}
+    />
+  );
+};
+
+// ── AmbientGlow (soft colored glow behind content) ──────────────────
+export const AmbientGlow: React.FC<{
+  color?: string;
+  size?: number;
+  y?: string;
+}> = ({ color = "#4F8CFF", size = 500, y = "50%" }) => {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: "50%",
+        top: y,
+        transform: "translate(-50%, -50%)",
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        background: color,
+        filter: `blur(${Math.round(size * 0.6)}px)`,
+        opacity: 0.1,
+        pointerEvents: "none",
+      }}
+    />
+  );
+};
+
+// ── ProSceneWrapper (combines all pro overlays) ─────────────────────
+export const ProSceneWrapper: React.FC<{
+  children: React.ReactNode;
+  bg?: "dark" | "light" | "subtle_gradient";
+  accentColor?: string;
+  bgStyle?: React.CSSProperties;
+}> = ({ children, bg = "dark", accentColor = "#4F8CFF", bgStyle }) => {
+  const isDark = bg !== "light";
+  return (
+    <div style={{ position: "absolute", inset: 0, ...bgStyle }}>
+      {/* Ambient glow behind content */}
+      {isDark && <AmbientGlow color={accentColor} size={600} />}
+      {/* Main content */}
+      <div style={{ position: "relative", zIndex: 1, width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        {children}
+      </div>
+      {/* Film grain overlay */}
+      {isDark && <FilmGrain opacity={0.035} />}
+      {/* Vignette overlay */}
+      {isDark && <Vignette intensity={0.5} />}
+    </div>
+  );
+};

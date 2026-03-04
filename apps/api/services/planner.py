@@ -135,12 +135,45 @@ PLANNER_SYSTEM_PROMPT = (
     "- If the user says nothing about motion graphics: you MAY include 0–3 "
     "inserts when transcript cues suggest them. Do not force them.\n"
     "- If the user explicitly requests animated/motion graphics: create them.\n"
-    "- Each insert must be 2–6 seconds long.\n"
+    "- DURATION BASELINE: Each insert should be 2–3 seconds by default. "
+    "This creates punchy, high-paced motion graphics. Only go up to 4–5 "
+    "seconds if the content genuinely requires longer animation (e.g. a "
+    "multi-step list with 5+ items, or a complex chart with many data "
+    "points). Never exceed 6 seconds.\n"
     "- Inserts must NOT overlap with each other.\n"
     "- Inserts must NOT overlap with b-roll windows.\n"
     "- No more frequent than 1 every 8 seconds apart.\n"
     "- Available template_ids: kpi-counter, line-chart, quote-highlight, "
     "steps-list, profile-card, code-card, custom.\n\n"
+    "PROMPT COMPLETENESS — CRITICAL:\n"
+    "You MUST include EVERY specific detail the user mentions in their "
+    "prompt. If the user mentions a specific number ($5,000, 10%, 3 steps, "
+    "etc.), that EXACT number must appear in the template props. If the "
+    "user mentions a color (red line, blue chart), use that color as "
+    "accentColor. If the user describes a direction (going up, dropping "
+    "down), reflect that in the data points. NEVER omit or simplify any "
+    "user-specified detail. Re-read the user prompt before finalizing "
+    "remotion_inserts to verify every detail is captured.\n\n"
+    "PRODUCTION-QUALITY DESIGN SYSTEM:\n"
+    "Our Remotion templates render with a polished, cinematic visual "
+    "style. When choosing props, follow these design principles:\n"
+    "- ALWAYS set bg to 'dark' unless the user explicitly asks for light. "
+    "Dark backgrounds with accent glow look dramatically more professional.\n"
+    "- Choose an accentColor that matches the content mood. Financial/ "
+    "money topics → '#FF4444' (red) or '#00CC66' (green). Growth/positive "
+    "→ '#00CC66' or '#4F8CFF' (blue). Warning/cost/expense → '#FF4444'. "
+    "Tech/code → '#4F8CFF'. Neutral → '#4F8CFF' (default blue).\n"
+    "- For kpi-counter: use a concise, impactful label (2-4 words max). "
+    "Set prefix/suffix for currency symbols or units (e.g. prefix='$', "
+    "suffix='/mo'). The value should be the exact number the user specified.\n"
+    "- For line-chart: use 3-6 data points that tell a clear story. "
+    "Always include meaningful labels on data points. The final point "
+    "should match any target number the user mentioned.\n"
+    "- For quote-highlight: keep quotes punchy and impactful, under 80 "
+    "characters when possible. Always include attribution if known.\n"
+    "- For steps-list: use concise step descriptions (3-6 words each).\n"
+    "- For profile-card: always include both name and title if available.\n"
+    "- For code-card: keep code concise, under 6 lines.\n\n"
     "TEMPLATE TRIGGER HEURISTICS (use these cues from the transcript):\n"
     "- Money/Revenue/ARR/Cost/Price numbers → kpi-counter or line-chart\n"
     "- Percentages/Growth numbers → line-chart or kpi-counter\n"
@@ -1276,7 +1309,7 @@ def _pick_best_quote(transcript: dict, plan_cuts: list, broll_windows: list) -> 
 
     # Place the insert so it doesn't overlap with b-roll
     insert_start = best["final_start"]
-    insert_end = min(best["final_end"], insert_start + 4.0)  # 4s max
+    insert_end = min(best["final_end"], insert_start + 3.0)  # 3s baseline
     insert_dur = insert_end - insert_start
     if insert_dur < 2.0:
         insert_end = insert_start + 2.0  # minimum 2s
@@ -1288,12 +1321,12 @@ def _pick_best_quote(transcript: dict, plan_cuts: list, broll_windows: list) -> 
         if insert_start < be and insert_end > bs:
             # Overlaps — shift after b-roll window
             insert_start = be + 0.5
-            insert_end = insert_start + 4.0
+            insert_end = insert_start + 3.0
 
     # Ensure within total duration
     if insert_end > total_duration:
         insert_end = total_duration
-        insert_start = max(0.0, insert_end - 4.0)
+        insert_start = max(0.0, insert_end - 3.0)
         if insert_end - insert_start < 2.0:
             return None
 
