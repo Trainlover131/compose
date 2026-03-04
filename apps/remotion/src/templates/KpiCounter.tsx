@@ -1,7 +1,14 @@
 import React from "react";
 import { AbsoluteFill } from "remotion";
-import { FadeIn, SlideUp, CountUpNumber, DrawLine, ProSceneWrapper } from "../components/AnimationPrimitives";
-import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE } from "../design-system";
+import {
+  CountUpNumber,
+  DrawLine,
+  HeroStack,
+  CornerBadge,
+  ProSceneWrapper,
+  FadeIn,
+} from "../components/AnimationPrimitives";
+import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE, TEXT_STYLES, TRACKING } from "../design-system";
 
 export interface KpiCounterProps {
   label: string;
@@ -22,52 +29,53 @@ export const KpiCounter: React.FC<KpiCounterProps> = ({
 }) => {
   const foreground = fgColor(bg);
   const bgStyle = proBgStyle(bg, accentColor);
+  const formatted = `${prefix}${value.toLocaleString()}${suffix}`;
 
   return (
     <AbsoluteFill>
       <ProSceneWrapper bg={bg} accentColor={accentColor} bgStyle={bgStyle}>
-        <FadeIn durationFrames={10}>
-          <p
-            style={{
-              color: PALETTE.muted,
-              fontSize: TYPE_SCALE.subtitle,
-              fontWeight: 500,
-              letterSpacing: 3,
-              textTransform: "uppercase",
-              marginBottom: 12,
-              fontFamily: FONTS.primary,
-            }}
-          >
-            {label}
-          </p>
-        </FadeIn>
+        {/* Corner badge */}
+        <CornerBadge label={label} value={formatted} />
 
-        <SlideUp durationFrames={14} delay={4} distance={25}>
-          <CountUpNumber
-            value={value}
-            prefix={prefix}
-            suffix={suffix}
-            durationFrames={40}
-            delay={6}
-            style={{
-              color: foreground,
-              fontSize: TYPE_SCALE.hero,
-              fontWeight: 700,
-              letterSpacing: -3,
-              fontFamily: FONTS.primary,
-            }}
+        {/* Main content — left-aligned, upper-middle */}
+        <div style={{ padding: "0 140px", width: "100%", alignSelf: "flex-start", marginTop: 200 }}>
+          <HeroStack
+            label={label}
+            value={formatted}
+            ghostValue={formatted}
+            accentColor={accentColor}
+            align="left"
           />
-        </SlideUp>
 
-        <SlideUp durationFrames={12} delay={10}>
-          <DrawLine
-            color={accentColor}
-            width={140}
-            thickness={4}
-            durationFrames={18}
-            delay={12}
-          />
-        </SlideUp>
+          {/* Animated count-up overlaid on the hero position */}
+          <div style={{ position: "relative", marginTop: -TYPE_SCALE.hero - 10 }}>
+            <CountUpNumber
+              value={value}
+              prefix={prefix}
+              suffix={suffix}
+              durationFrames={25}
+              delay={5}
+              style={{
+                ...TEXT_STYLES.heroNumber,
+                fontSize: TYPE_SCALE.hero,
+                color: foreground,
+              }}
+            />
+          </div>
+
+          {/* Accent underline */}
+          <FadeIn durationFrames={8} delay={14}>
+            <div style={{ marginTop: 16 }}>
+              <DrawLine
+                color={accentColor}
+                width={160}
+                thickness={4}
+                durationFrames={14}
+                delay={16}
+              />
+            </div>
+          </FadeIn>
+        </div>
       </ProSceneWrapper>
     </AbsoluteFill>
   );

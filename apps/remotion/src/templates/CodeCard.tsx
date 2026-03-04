@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame, interpolate, Easing } from "remotion";
-import { FadeIn, SlideUp, ProSceneWrapper } from "../components/AnimationPrimitives";
-import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE } from "../design-system";
+import { FadeIn, SlideUp, CornerBadge, ProSceneWrapper } from "../components/AnimationPrimitives";
+import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE, TEXT_STYLES } from "../design-system";
 
 export interface CodeCardProps {
   title?: string;
@@ -44,64 +44,76 @@ export const CodeCard: React.FC<CodeCardProps> = ({
   return (
     <AbsoluteFill>
       <ProSceneWrapper bg={bg} accentColor={accentColor} bgStyle={bgStyle}>
-        {title && (
-          <FadeIn durationFrames={10}>
-            <h1
+        {/* Corner badge */}
+        <CornerBadge label="CODE" value={`${lines.length} lines`} />
+
+        <div style={{ padding: "0 140px", width: "100%", alignSelf: "flex-start", marginTop: 140 }}>
+          {title && (
+            <FadeIn durationFrames={8} delay={2}>
+              <p style={{ ...TEXT_STYLES.label, fontSize: TYPE_SCALE.caption, color: PALETTE.white, marginBottom: 8 }}>
+                {title}
+              </p>
+            </FadeIn>
+          )}
+
+          {title && (
+            <SlideUp durationFrames={10} delay={4} distance={16}>
+              <h1
+                style={{
+                  color: foreground,
+                  fontSize: TYPE_SCALE.title - 4,
+                  fontWeight: 700,
+                  marginBottom: 28,
+                  fontFamily: FONTS.display,
+                }}
+              >
+                {title}
+              </h1>
+            </SlideUp>
+          )}
+
+          <SlideUp durationFrames={12} delay={6}>
+            <div
               style={{
-                color: foreground,
-                fontSize: TYPE_SCALE.title - 4,
-                fontWeight: 700,
-                marginBottom: 28,
-                textAlign: "center",
-                fontFamily: FONTS.primary,
+                backgroundColor: codeBgColor,
+                border: `1px solid ${codeFrameColor}`,
+                borderRadius: 16,
+                padding: "32px 40px",
+                maxWidth: 1500,
+                width: "100%",
+                boxShadow: `0 8px 32px rgba(0,0,0,0.3)`,
               }}
             >
-              {title}
-            </h1>
-          </FadeIn>
-        )}
+              <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+                <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#FF5F57" }} />
+                <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#FEBC2E" }} />
+                <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#28C840" }} />
+              </div>
 
-        <SlideUp durationFrames={12} delay={4}>
-          <div
-            style={{
-              backgroundColor: codeBgColor,
-              border: `1px solid ${codeFrameColor}`,
-              borderRadius: 16,
-              padding: "36px 44px",
-              maxWidth: 1500,
-              width: "100%",
-              boxShadow: `0 8px 32px rgba(0,0,0,0.3)`,
-            }}
-          >
-            <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-              <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#FF5F57" }} />
-              <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#FEBC2E" }} />
-              <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#28C840" }} />
+              <pre
+                style={{
+                  fontFamily: FONTS.mono,
+                  fontSize: TYPE_SCALE.body,
+                  lineHeight: 1.6,
+                  color: foreground,
+                  margin: 0,
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-all",
+                }}
+              >
+                {visibleLines.map((line, i) => (
+                  <React.Fragment key={i}>
+                    <span style={{ color: PALETTE.muted_dim, fontSize: TYPE_SCALE.caption, marginRight: 16 }}>
+                      {String(i + 1).padStart(2, " ")}
+                    </span>
+                    {line}
+                    {"\n"}
+                  </React.Fragment>
+                ))}
+              </pre>
             </div>
-
-            <pre
-              style={{
-                fontFamily: FONTS.mono,
-                fontSize: TYPE_SCALE.body,
-                lineHeight: 1.6,
-                color: foreground,
-                margin: 0,
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-all",
-              }}
-            >
-              {visibleLines.map((line, i) => (
-                <React.Fragment key={i}>
-                  <span style={{ color: PALETTE.muted_dim, fontSize: TYPE_SCALE.caption, marginRight: 16 }}>
-                    {String(i + 1).padStart(2, " ")}
-                  </span>
-                  {line}
-                  {"\n"}
-                </React.Fragment>
-              ))}
-            </pre>
-          </div>
-        </SlideUp>
+          </SlideUp>
+        </div>
       </ProSceneWrapper>
     </AbsoluteFill>
   );
