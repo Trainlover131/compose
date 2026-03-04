@@ -6,7 +6,7 @@
  * from the SUPACUT design system.
  */
 import React from "react";
-import { AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate, Easing } from "remotion";
+import { AbsoluteFill } from "remotion";
 import {
   FadeIn,
   SlideUp,
@@ -18,8 +18,9 @@ import {
   HighlightSweep,
   SoftZoom,
   SubtleRotate3D,
+  ProSceneWrapper,
 } from "../components/AnimationPrimitives";
-import { FONTS, bgColor, fgColor, PALETTE, BUDGET } from "../design-system";
+import { FONTS, PALETTE, BUDGET, proBgStyle, fgColor, TYPE_SCALE } from "../design-system";
 import type { MotionPrimitive } from "../design-system";
 
 // ── CustomRemotionSceneSpec types ───────────────────────────────────
@@ -77,26 +78,26 @@ function wrapPrimitive(
   children: React.ReactNode,
   index: number,
 ): React.ReactNode {
-  const delay = index * 6;
+  const delay = index * 5;
   switch (primitive) {
     case "FadeIn":
-      return <FadeIn durationFrames={15} delay={delay}>{children}</FadeIn>;
+      return <FadeIn durationFrames={12} delay={delay}>{children}</FadeIn>;
     case "SlideUp":
-      return <SlideUp durationFrames={18} delay={delay}>{children}</SlideUp>;
+      return <SlideUp durationFrames={14} delay={delay}>{children}</SlideUp>;
     case "SlideLeft":
-      return <SlideLeft durationFrames={18} delay={delay}>{children}</SlideLeft>;
+      return <SlideLeft durationFrames={14} delay={delay}>{children}</SlideLeft>;
     case "ScaleSpring":
       return <ScaleSpring delay={delay}>{children}</ScaleSpring>;
     case "MaskReveal":
-      return <MaskReveal durationFrames={20} delay={delay}>{children}</MaskReveal>;
+      return <MaskReveal durationFrames={16} delay={delay}>{children}</MaskReveal>;
     case "HighlightSweep":
-      return <HighlightSweep durationFrames={20} delay={delay}>{children}</HighlightSweep>;
+      return <HighlightSweep durationFrames={16} delay={delay}>{children}</HighlightSweep>;
     case "SoftZoom":
       return <SoftZoom delay={delay}>{children}</SoftZoom>;
     case "SubtleRotate3D":
-      return <SubtleRotate3D durationFrames={25} delay={delay}>{children}</SubtleRotate3D>;
+      return <SubtleRotate3D durationFrames={20} delay={delay}>{children}</SubtleRotate3D>;
     default:
-      return <FadeIn durationFrames={15} delay={delay}>{children}</FadeIn>;
+      return <FadeIn durationFrames={12} delay={delay}>{children}</FadeIn>;
   }
 }
 
@@ -119,7 +120,7 @@ const ElementRenderer: React.FC<{
         <p
           style={{
             color: foreground,
-            fontSize: 44,
+            fontSize: TYPE_SCALE.title - 4,
             fontWeight: 600,
             fontFamily,
             textAlign: el.layout === "center" ? "center" : "left",
@@ -137,11 +138,11 @@ const ElementRenderer: React.FC<{
           value={Number(el.data?.value ?? 0)}
           prefix={String(el.data?.prefix ?? "")}
           suffix={String(el.data?.suffix ?? "")}
-          durationFrames={45}
-          delay={index * 6}
+          durationFrames={35}
+          delay={index * 5}
           style={{
             color: foreground,
-            fontSize: 96,
+            fontSize: TYPE_SCALE.hero - 16,
             fontWeight: 700,
             fontFamily,
           }}
@@ -154,8 +155,8 @@ const ElementRenderer: React.FC<{
           color={accentColor}
           width={Number(el.data?.width ?? 120)}
           thickness={Number(el.data?.thickness ?? 3)}
-          durationFrames={20}
-          delay={index * 6}
+          durationFrames={16}
+          delay={index * 5}
         />
       );
       break;
@@ -167,13 +168,14 @@ const ElementRenderer: React.FC<{
             height: Number(el.data?.height ?? 80),
             backgroundColor: accentColor,
             borderRadius: Number(el.data?.borderRadius ?? 8),
+            boxShadow: `0 0 24px ${accentColor}22`,
           }}
         />
       );
       break;
     default:
       content = (
-        <p style={{ color: foreground, fontSize: 36, fontFamily }}>
+        <p style={{ color: foreground, fontSize: TYPE_SCALE.subtitle, fontFamily }}>
           {el.text || ""}
         </p>
       );
@@ -185,47 +187,43 @@ const ElementRenderer: React.FC<{
 // ── Main custom scene component ─────────────────────────────────────
 
 export const CustomScene: React.FC<CustomSceneProps> = ({ spec }) => {
-  const background = bgColor(spec.bg);
   const foreground = fgColor(spec.bg);
   const fontFamily = spec.typography.primary_font || FONTS.primary;
+  const accentColor = spec.accent_color || PALETTE.default_accent;
+  const bgStyle = proBgStyle(spec.bg, accentColor);
 
-  // Enforce hard limits: cap elements
   const maxEl = Math.min(
     spec.hard_limits?.max_elements ?? BUDGET.max_elements_per_scene,
     BUDGET.max_elements_per_scene,
   );
   const elements = spec.elements.slice(0, maxEl);
 
-  const bgStyle: React.CSSProperties =
-    spec.bg === "subtle_gradient"
-      ? {
-          background: `linear-gradient(160deg, ${PALETTE.dark_bg} 0%, #1A1A2E 100%)`,
-        }
-      : { backgroundColor: background };
-
   return (
-    <AbsoluteFill
-      style={{
-        ...bgStyle,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 24,
-        padding: "0 120px",
-        fontFamily,
-      }}
-    >
-      {elements.map((el, i) => (
-        <ElementRenderer
-          key={i}
-          el={el}
-          index={i}
-          foreground={foreground}
-          accentColor={spec.accent_color || PALETTE.default_accent}
-          fontFamily={fontFamily}
-        />
-      ))}
+    <AbsoluteFill>
+      <ProSceneWrapper bg={spec.bg} accentColor={accentColor} bgStyle={bgStyle}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 20,
+            padding: "0 120px",
+            fontFamily,
+          }}
+        >
+          {elements.map((el, i) => (
+            <ElementRenderer
+              key={i}
+              el={el}
+              index={i}
+              foreground={foreground}
+              accentColor={accentColor}
+              fontFamily={fontFamily}
+            />
+          ))}
+        </div>
+      </ProSceneWrapper>
     </AbsoluteFill>
   );
 };
