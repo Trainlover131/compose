@@ -8,9 +8,10 @@
  *     --props '{"label":"ARR","value":25000,"prefix":"$"}' \
  *     --duration 4 \
  *     --output /tmp/remotion_out.mp4 \
- *     [--fps 30] [--width 1920] [--height 1080]
+ *     [--fps 30] [--width 1080] [--height 1920]
  *
  * Uses Remotion Node API: bundle + getCompositions + renderMedia.
+ * Default resolution is 1080x1920 (portrait / 9:16).
  */
 import path from "path";
 import { bundle } from "@remotion/bundler";
@@ -44,8 +45,8 @@ function parseArgs(): RenderArgs {
     duration: parseFloat(get("--duration", "4")),
     output: get("--output"),
     fps: parseInt(get("--fps", "30"), 10),
-    width: parseInt(get("--width", "1920"), 10),
-    height: parseInt(get("--height", "1080"), 10),
+    width: parseInt(get("--width", "1080"), 10),
+    height: parseInt(get("--height", "1920"), 10),
     timeoutMs: parseInt(get("--timeout", "60000"), 10),
   };
 }
@@ -91,6 +92,11 @@ async function main() {
 
   // Step 3: Render
   const durationInFrames = Math.round(config.duration * config.fps);
+
+  // Log full props for debugging
+  console.log(
+    `[remotion-render] Props: ${JSON.stringify(config.props)}`
+  );
   console.log(
     `[remotion-render] Rendering "${config.composition}" ` +
       `(${durationInFrames} frames @ ${config.fps}fps, ${config.width}x${config.height}) ` +
@@ -130,6 +136,8 @@ async function main() {
       composition: config.composition,
       duration_sec: config.duration,
       frames: durationInFrames,
+      width: config.width,
+      height: config.height,
     })
   );
 }

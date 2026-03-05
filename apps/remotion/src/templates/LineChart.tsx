@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate, Easing } from "remotion";
 import { FadeIn, SlideUp, ProSceneWrapper } from "../components/AnimationPrimitives";
-import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE } from "../design-system";
+import { FONTS, PALETTE, proBgStyle, fgColor } from "../design-system";
 
 export interface LineChartPoint {
   x: number;
@@ -17,9 +17,10 @@ export interface LineChartProps {
   bg?: "dark" | "light";
 }
 
-const CHART_MARGIN = { top: 60, right: 80, bottom: 80, left: 100 };
-const CHART_W = 1920 - CHART_MARGIN.left - CHART_MARGIN.right;
-const CHART_H = 600;
+// Portrait-optimized chart dimensions (1080x1920 canvas)
+const CHART_MARGIN = { top: 40, right: 60, bottom: 60, left: 80 };
+const CHART_W = 1080 - CHART_MARGIN.left - CHART_MARGIN.right;
+const CHART_H = 700;
 
 export const LineChart: React.FC<LineChartProps> = ({
   title,
@@ -64,35 +65,32 @@ export const LineChart: React.FC<LineChartProps> = ({
     totalLen += Math.sqrt(dx * dx + dy * dy);
   }
 
-  // Glow path under the main line
-  const glowOpacity = interpolate(drawProgress, [0, 0.3], [0, 0.3], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-  });
+  const svgW = 1080;
+  const svgH = CHART_H + CHART_MARGIN.top + CHART_MARGIN.bottom;
 
   return (
     <AbsoluteFill>
       <ProSceneWrapper bg={bg} accentColor={accentColor} bgStyle={bgStyle}>
-        <FadeIn durationFrames={10}>
+        <FadeIn durationFrames={12}>
           <h1
             style={{
               color: foreground,
-              fontSize: TYPE_SCALE.title,
+              fontSize: 44,
               fontWeight: 700,
-              marginBottom: 20,
+              fontFamily: FONTS.display,
+              marginBottom: 24,
               textAlign: "center",
-              fontFamily: FONTS.primary,
             }}
           >
             {title}
           </h1>
         </FadeIn>
 
-        <SlideUp durationFrames={12} delay={4}>
+        <SlideUp durationFrames={15} delay={5}>
           <svg
-            width={1920}
-            height={CHART_H + CHART_MARGIN.top + CHART_MARGIN.bottom}
-            viewBox={`0 0 1920 ${CHART_H + CHART_MARGIN.top + CHART_MARGIN.bottom}`}
+            width={svgW}
+            height={svgH}
+            viewBox={`0 0 ${svgW} ${svgH}`}
           >
             {/* Y axis */}
             <line
@@ -102,7 +100,7 @@ export const LineChart: React.FC<LineChartProps> = ({
               y2={CHART_MARGIN.top + CHART_H}
               stroke={muted}
               strokeWidth={1}
-              opacity={0.2}
+              opacity={0.3}
             />
             {/* X axis */}
             <line
@@ -112,38 +110,34 @@ export const LineChart: React.FC<LineChartProps> = ({
               y2={CHART_MARGIN.top + CHART_H}
               stroke={muted}
               strokeWidth={1}
-              opacity={0.2}
+              opacity={0.3}
             />
 
             {/* Y label */}
             {yLabel && (
               <text
-                x={CHART_MARGIN.left - 60}
+                x={CHART_MARGIN.left - 50}
                 y={CHART_MARGIN.top + CHART_H / 2}
                 fill={muted}
-                fontSize={TYPE_SCALE.caption}
+                fontSize={20}
+                fontFamily={FONTS.ui}
                 textAnchor="middle"
-                transform={`rotate(-90, ${CHART_MARGIN.left - 60}, ${CHART_MARGIN.top + CHART_H / 2})`}
+                transform={`rotate(-90, ${CHART_MARGIN.left - 50}, ${CHART_MARGIN.top + CHART_H / 2})`}
               >
                 {yLabel}
               </text>
             )}
 
-            {/* Glow line (wider, blurred) */}
-            <path
-              d={pathD}
-              fill="none"
-              stroke={accentColor}
-              strokeWidth={16}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeDasharray={totalLen}
-              strokeDashoffset={totalLen * (1 - drawProgress)}
-              opacity={glowOpacity}
-              filter="url(#lineGlow)"
-            />
+            {/* Area fill under line */}
+            {drawProgress > 0.05 && (
+              <path
+                d={`${pathD} L ${toSvgX(points[points.length - 1].x)},${CHART_MARGIN.top + CHART_H} L ${toSvgX(points[0].x)},${CHART_MARGIN.top + CHART_H} Z`}
+                fill={accentColor}
+                opacity={drawProgress * 0.08}
+              />
+            )}
 
-            {/* Main data line */}
+            {/* Data line */}
             <path
               d={pathD}
               fill="none"
@@ -155,17 +149,6 @@ export const LineChart: React.FC<LineChartProps> = ({
               strokeDashoffset={totalLen * (1 - drawProgress)}
             />
 
-            {/* SVG filter for glow */}
-            <defs>
-              <filter id="lineGlow" x="-50%" y="-50%" width="200%" height="200%">
-                <feGaussianBlur stdDeviation="8" result="blur" />
-                <feMerge>
-                  <feMergeNode in="blur" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
-            </defs>
-
             {/* Data points */}
             {points.map((p, i) => {
               const pointProgress = interpolate(
@@ -175,23 +158,14 @@ export const LineChart: React.FC<LineChartProps> = ({
                 { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
               );
               return (
-                <React.Fragment key={i}>
-                  {/* Glow behind dot */}
-                  <circle
-                    cx={toSvgX(p.x)}
-                    cy={toSvgY(p.y)}
-                    r={14 * pointProgress}
-                    fill={accentColor}
-                    opacity={pointProgress * 0.2}
-                  />
-                  <circle
-                    cx={toSvgX(p.x)}
-                    cy={toSvgY(p.y)}
-                    r={6 * pointProgress}
-                    fill={accentColor}
-                    opacity={pointProgress}
-                  />
-                </React.Fragment>
+                <circle
+                  key={i}
+                  cx={toSvgX(p.x)}
+                  cy={toSvgY(p.y)}
+                  r={6 * pointProgress}
+                  fill={accentColor}
+                  opacity={pointProgress}
+                />
               );
             })}
 
@@ -201,9 +175,10 @@ export const LineChart: React.FC<LineChartProps> = ({
                 <text
                   key={`label-${i}`}
                   x={toSvgX(p.x)}
-                  y={CHART_MARGIN.top + CHART_H + 40}
+                  y={CHART_MARGIN.top + CHART_H + 36}
                   fill={muted}
-                  fontSize={TYPE_SCALE.caption}
+                  fontSize={20}
+                  fontFamily={FONTS.ui}
                   textAnchor="middle"
                 >
                   {p.label}

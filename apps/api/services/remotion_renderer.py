@@ -48,6 +48,7 @@ PREVIEW_TIMEOUT_SEC = 30
 # ── Valid template IDs ───────────────────────────────────────────────
 VALID_TEMPLATE_IDS = {
     "kpi-counter",
+    "kpi-chart",
     "line-chart",
     "quote-highlight",
     "steps-list",
@@ -62,8 +63,8 @@ def _cache_key(
     props: dict,
     duration_sec: float,
     fps: int = 30,
-    width: int = 1920,
-    height: int = 1080,
+    width: int = 1080,
+    height: int = 1920,
 ) -> str:
     """Content-addressed cache key for rendered clips."""
     payload = json.dumps(
@@ -90,8 +91,8 @@ def render_remotion_insert(
     props: dict,
     duration_sec: float,
     fps: int = 30,
-    width: int = 1920,
-    height: int = 1080,
+    width: int = 1080,
+    height: int = 1920,
     timeout_sec: int = RENDER_TIMEOUT_SEC,
     insert_id: str = "",
 ) -> Optional[str]:
@@ -158,6 +159,15 @@ def render_remotion_insert(
             template_id,
             duration_sec,
             output_path,
+        )
+        logger.info(
+            "Remotion render props: template=%s props=%s",
+            template_id,
+            props_json,
+        )
+        logger.info(
+            "Remotion render cmd: %s",
+            " ".join(cmd),
         )
 
         result = subprocess.run(

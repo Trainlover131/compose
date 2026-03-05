@@ -1,7 +1,7 @@
 import React from "react";
-import { AbsoluteFill, useCurrentFrame, interpolate, Easing } from "remotion";
+import { AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate, Easing } from "remotion";
 import { FadeIn, ProSceneWrapper } from "../components/AnimationPrimitives";
-import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE } from "../design-system";
+import { FONTS, PALETTE, proBgStyle, fgColor } from "../design-system";
 
 export interface StepsListProps {
   title: string;
@@ -20,34 +20,34 @@ export const StepsList: React.FC<StepsListProps> = ({
   const frame = useCurrentFrame();
   const bgStyle = proBgStyle(bg, accentColor);
 
-  const staggerDelay = 6;
-  const baseDelay = 12;
+  const staggerDelay = 8;
+  const baseDelay = 15;
 
   return (
     <AbsoluteFill>
       <ProSceneWrapper bg={bg} accentColor={accentColor} bgStyle={bgStyle}>
-        <div style={{ padding: "0 160px", width: "100%" }}>
-          <FadeIn durationFrames={10}>
+        <div style={{ padding: "0 80px", maxWidth: 960, width: "100%" }}>
+          <FadeIn durationFrames={12}>
             <h1
               style={{
                 color: foreground,
-                fontSize: TYPE_SCALE.title,
+                fontSize: 44,
                 fontWeight: 700,
-                marginBottom: 40,
+                fontFamily: FONTS.display,
+                marginBottom: 48,
                 textAlign: "center",
-                fontFamily: FONTS.primary,
               }}
             >
               {title}
             </h1>
           </FadeIn>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 24, maxWidth: 1400, margin: "0 auto" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 28, width: "100%" }}>
             {steps.slice(0, 8).map((step, i) => {
               const delay = baseDelay + i * staggerDelay;
               const progress = interpolate(
                 frame - delay,
-                [0, 12],
+                [0, 15],
                 [0, 1],
                 { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.out(Easing.cubic) }
               );
@@ -60,29 +60,28 @@ export const StepsList: React.FC<StepsListProps> = ({
                     alignItems: "center",
                     gap: 20,
                     opacity: progress,
-                    transform: `translateX(${(1 - progress) * 24}px)`,
+                    transform: `translateX(${(1 - progress) * 30}px)`,
                   }}
                 >
                   <div
                     style={{
-                      width: 40,
-                      height: 40,
-                      borderRadius: 20,
+                      width: 44,
+                      height: 44,
+                      borderRadius: 22,
                       backgroundColor: accentColor,
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
                       flexShrink: 0,
                       transform: `scale(${progress})`,
-                      boxShadow: `0 0 16px ${accentColor}33`,
                     }}
                   >
                     <span
                       style={{
                         color: "#FFFFFF",
-                        fontSize: TYPE_SCALE.caption,
+                        fontSize: 20,
                         fontWeight: 700,
-                        fontFamily: FONTS.primary,
+                        fontFamily: FONTS.ui,
                       }}
                     >
                       {i + 1}
@@ -91,10 +90,10 @@ export const StepsList: React.FC<StepsListProps> = ({
                   <p
                     style={{
                       color: foreground,
-                      fontSize: TYPE_SCALE.subtitle,
+                      fontSize: 32,
                       fontWeight: 500,
+                      fontFamily: FONTS.ui,
                       lineHeight: 1.3,
-                      fontFamily: FONTS.primary,
                     }}
                   >
                     {step}

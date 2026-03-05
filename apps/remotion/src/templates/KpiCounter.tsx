@@ -1,6 +1,13 @@
 import React from "react";
 import { AbsoluteFill } from "remotion";
-import { FadeIn, SlideUp, ScaleSpring, CountUpNumber, DrawLine, HeroStack, ProSceneWrapper } from "../components/AnimationPrimitives";
+import {
+  FadeIn,
+  ScaleSpring,
+  CountUpNumber,
+  DrawLine,
+  HeroStack,
+  ProSceneWrapper,
+} from "../components/AnimationPrimitives";
 import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE } from "../design-system";
 
 export interface KpiCounterProps {
@@ -22,14 +29,11 @@ export const KpiCounter: React.FC<KpiCounterProps> = ({
 }) => {
   const foreground = fgColor(bg);
   const bgStyle = proBgStyle(bg, accentColor);
-
-  // Format value for ghost display
   const ghostText = prefix + value.toLocaleString() + suffix;
 
   return (
     <AbsoluteFill>
       <ProSceneWrapper bg={bg} accentColor={accentColor} bgStyle={bgStyle}>
-        {/* Phase 4: staged reveal — bg visible 0-5, hero 5-18, details 18-36 */}
         <ScaleSpring delay={5}>
           <HeroStack
             label={label}
@@ -38,13 +42,13 @@ export const KpiCounter: React.FC<KpiCounterProps> = ({
                 value={value}
                 prefix={prefix}
                 suffix={suffix}
-                durationFrames={40}
-                delay={6}
+                durationFrames={50}
+                delay={8}
                 style={{
                   color: foreground,
                   fontSize: TYPE_SCALE.hero,
                   fontWeight: 700,
-                  letterSpacing: -3,
+                  letterSpacing: -2,
                   fontFamily: FONTS.display,
                 }}
               />
@@ -52,7 +56,7 @@ export const KpiCounter: React.FC<KpiCounterProps> = ({
             ghost={ghostText}
             color={foreground}
             accentColor={accentColor}
-            anchor="left"
+            anchor="center"
           />
         </ScaleSpring>
 
@@ -61,7 +65,7 @@ export const KpiCounter: React.FC<KpiCounterProps> = ({
             color={accentColor}
             width={140}
             thickness={4}
-            durationFrames={18}
+            durationFrames={20}
             delay={20}
           />
         </FadeIn>
