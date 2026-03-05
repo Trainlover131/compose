@@ -1,5 +1,5 @@
 import React from "react";
-import { AbsoluteFill, useCurrentFrame, interpolate } from "remotion";
+import { AbsoluteFill, useCurrentFrame, interpolate, Easing } from "remotion";
 import { FadeIn, SlideUp, MaskReveal, DrawLine, ProSceneWrapper } from "../components/AnimationPrimitives";
 import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE, OPACITY, TEXT_STYLES } from "../design-system";
 
@@ -19,10 +19,12 @@ export const QuoteHighlight: React.FC<QuoteHighlightProps> = ({
   serif = false,
 }) => {
   const foreground = fgColor(bg);
+  // Default is SANS. Only use serif if explicitly requested.
   const fontFamily = serif ? FONTS.serifEditorialOnly : FONTS.display;
   const bgStyle = proBgStyle(bg, accentColor);
   const frame = useCurrentFrame();
 
+  // Ghost quote mark
   const ghostOp = interpolate(frame, [3, 12], [0, OPACITY.ghost], {
     extrapolateLeft: "clamp", extrapolateRight: "clamp",
   });
@@ -34,9 +36,9 @@ export const QuoteHighlight: React.FC<QuoteHighlightProps> = ({
         <div
           style={{
             position: "absolute",
-            top: 400,
-            left: 30,
-            fontSize: 240,
+            top: 100,
+            left: 80,
+            fontSize: 320,
             fontFamily: FONTS.display,
             fontWeight: 800,
             color: PALETTE.white,
@@ -49,16 +51,16 @@ export const QuoteHighlight: React.FC<QuoteHighlightProps> = ({
           &ldquo;
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", padding: "0 60px", width: "100%", position: "relative", zIndex: 1 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", padding: "0 140px", width: "100%", position: "relative", zIndex: 1 }}>
           {/* Accent bar */}
           <SlideUp durationFrames={10} delay={3}>
             <div
               style={{
-                width: 4,
-                height: 60,
+                width: 5,
+                height: 80,
                 backgroundColor: accentColor,
-                borderRadius: 2,
-                marginBottom: 24,
+                borderRadius: 3,
+                marginBottom: 28,
                 boxShadow: `0 0 20px ${accentColor}44`,
               }}
             />
@@ -69,12 +71,12 @@ export const QuoteHighlight: React.FC<QuoteHighlightProps> = ({
             <p
               style={{
                 color: foreground,
-                fontSize: TYPE_SCALE.title - 4,
+                fontSize: TYPE_SCALE.title + 4,
                 fontWeight: serif ? 400 : 600,
                 lineHeight: 1.35,
                 fontFamily,
                 fontStyle: serif ? "italic" : "normal",
-                maxWidth: 960,
+                maxWidth: 1400,
               }}
             >
               &ldquo;{quote}&rdquo;
@@ -83,8 +85,14 @@ export const QuoteHighlight: React.FC<QuoteHighlightProps> = ({
 
           {/* Accent underline */}
           <FadeIn durationFrames={8} delay={18}>
-            <div style={{ marginTop: 18 }}>
-              <DrawLine color={accentColor} width={70} thickness={3} durationFrames={12} delay={20} />
+            <div style={{ marginTop: 20 }}>
+              <DrawLine
+                color={accentColor}
+                width={80}
+                thickness={3}
+                durationFrames={12}
+                delay={20}
+              />
             </div>
           </FadeIn>
 
@@ -94,10 +102,10 @@ export const QuoteHighlight: React.FC<QuoteHighlightProps> = ({
               <p
                 style={{
                   ...TEXT_STYLES.label,
-                  fontSize: TYPE_SCALE.body - 2,
+                  fontSize: TYPE_SCALE.body,
                   color: PALETTE.muted,
                   fontWeight: 500,
-                  marginTop: 14,
+                  marginTop: 16,
                 }}
               >
                 &mdash; {attribution}

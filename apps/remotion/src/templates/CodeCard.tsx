@@ -44,12 +44,13 @@ export const CodeCard: React.FC<CodeCardProps> = ({
   return (
     <AbsoluteFill>
       <ProSceneWrapper bg={bg} accentColor={accentColor} bgStyle={bgStyle}>
+        {/* Corner badge */}
         <CornerBadge label="CODE" value={`${lines.length} lines`} />
 
-        <div style={{ padding: "0 50px", width: "100%" }}>
+        <div style={{ padding: "0 140px", width: "100%", alignSelf: "flex-start", marginTop: 140 }}>
           {title && (
             <FadeIn durationFrames={8} delay={2}>
-              <p style={{ ...TEXT_STYLES.label, fontSize: TYPE_SCALE.caption - 2, color: PALETTE.white, marginBottom: 6, textAlign: "center" }}>
+              <p style={{ ...TEXT_STYLES.label, fontSize: TYPE_SCALE.caption, color: PALETTE.white, marginBottom: 8 }}>
                 {title}
               </p>
             </FadeIn>
@@ -57,7 +58,15 @@ export const CodeCard: React.FC<CodeCardProps> = ({
 
           {title && (
             <SlideUp durationFrames={10} delay={4} distance={16}>
-              <h1 style={{ color: foreground, fontSize: TYPE_SCALE.title - 8, fontWeight: 700, marginBottom: 24, fontFamily: FONTS.display, textAlign: "center" }}>
+              <h1
+                style={{
+                  color: foreground,
+                  fontSize: TYPE_SCALE.title - 4,
+                  fontWeight: 700,
+                  marginBottom: 28,
+                  fontFamily: FONTS.display,
+                }}
+              >
                 {title}
               </h1>
             </SlideUp>
@@ -68,22 +77,23 @@ export const CodeCard: React.FC<CodeCardProps> = ({
               style={{
                 backgroundColor: codeBgColor,
                 border: `1px solid ${codeFrameColor}`,
-                borderRadius: 14,
-                padding: "28px 32px",
+                borderRadius: 16,
+                padding: "32px 40px",
+                maxWidth: 1500,
                 width: "100%",
                 boxShadow: `0 8px 32px rgba(0,0,0,0.3)`,
               }}
             >
-              <div style={{ display: "flex", gap: 7, marginBottom: 16 }}>
-                <div style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: "#FF5F57" }} />
-                <div style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: "#FEBC2E" }} />
-                <div style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: "#28C840" }} />
+              <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+                <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#FF5F57" }} />
+                <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#FEBC2E" }} />
+                <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#28C840" }} />
               </div>
 
               <pre
                 style={{
                   fontFamily: FONTS.mono,
-                  fontSize: TYPE_SCALE.caption,
+                  fontSize: TYPE_SCALE.body,
                   lineHeight: 1.6,
                   color: foreground,
                   margin: 0,
@@ -93,7 +103,7 @@ export const CodeCard: React.FC<CodeCardProps> = ({
               >
                 {visibleLines.map((line, i) => (
                   <React.Fragment key={i}>
-                    <span style={{ color: PALETTE.muted_dim, fontSize: TYPE_SCALE.micro, marginRight: 12 }}>
+                    <span style={{ color: PALETTE.muted_dim, fontSize: TYPE_SCALE.caption, marginRight: 16 }}>
                       {String(i + 1).padStart(2, " ")}
                     </span>
                     {line}
