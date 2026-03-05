@@ -18,8 +18,9 @@ import {
   HighlightSweep,
   SoftZoom,
   SubtleRotate3D,
+  ProSceneWrapper,
 } from "../components/AnimationPrimitives";
-import { FONTS, bgColor, fgColor, PALETTE, BUDGET } from "../design-system";
+import { FONTS, bgColor, fgColor, PALETTE, BUDGET, proBgStyle } from "../design-system";
 import type { MotionPrimitive } from "../design-system";
 
 // ── CustomRemotionSceneSpec types ───────────────────────────────────
@@ -119,11 +120,11 @@ const ElementRenderer: React.FC<{
         <p
           style={{
             color: foreground,
-            fontSize: 44,
+            fontSize: 40,
             fontWeight: 600,
             fontFamily,
             textAlign: el.layout === "center" ? "center" : "left",
-            maxWidth: 1400,
+            maxWidth: 900,
             lineHeight: 1.4,
           }}
         >
@@ -141,7 +142,7 @@ const ElementRenderer: React.FC<{
           delay={index * 6}
           style={{
             color: foreground,
-            fontSize: 96,
+            fontSize: 88,
             fontWeight: 700,
             fontFamily,
           }}
@@ -173,7 +174,7 @@ const ElementRenderer: React.FC<{
       break;
     default:
       content = (
-        <p style={{ color: foreground, fontSize: 36, fontFamily }}>
+        <p style={{ color: foreground, fontSize: 32, fontFamily }}>
           {el.text || ""}
         </p>
       );
@@ -185,47 +186,43 @@ const ElementRenderer: React.FC<{
 // ── Main custom scene component ─────────────────────────────────────
 
 export const CustomScene: React.FC<CustomSceneProps> = ({ spec }) => {
-  const background = bgColor(spec.bg);
   const foreground = fgColor(spec.bg);
   const fontFamily = spec.typography.primary_font || FONTS.primary;
+  const accentColor = spec.accent_color || PALETTE.default_accent;
+  const bgStyleProp = proBgStyle(spec.bg, accentColor);
 
-  // Enforce hard limits: cap elements
   const maxEl = Math.min(
     spec.hard_limits?.max_elements ?? BUDGET.max_elements_per_scene,
     BUDGET.max_elements_per_scene,
   );
   const elements = spec.elements.slice(0, maxEl);
 
-  const bgStyle: React.CSSProperties =
-    spec.bg === "subtle_gradient"
-      ? {
-          background: `linear-gradient(160deg, ${PALETTE.dark_bg} 0%, #1A1A2E 100%)`,
-        }
-      : { backgroundColor: background };
-
   return (
-    <AbsoluteFill
-      style={{
-        ...bgStyle,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 24,
-        padding: "0 120px",
-        fontFamily,
-      }}
-    >
-      {elements.map((el, i) => (
-        <ElementRenderer
-          key={i}
-          el={el}
-          index={i}
-          foreground={foreground}
-          accentColor={spec.accent_color || PALETTE.default_accent}
-          fontFamily={fontFamily}
-        />
-      ))}
+    <AbsoluteFill>
+      <ProSceneWrapper bg={spec.bg} accentColor={accentColor} bgStyle={bgStyleProp}>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 24,
+            padding: "0 60px",
+            fontFamily,
+          }}
+        >
+          {elements.map((el, i) => (
+            <ElementRenderer
+              key={i}
+              el={el}
+              index={i}
+              foreground={foreground}
+              accentColor={accentColor}
+              fontFamily={fontFamily}
+            />
+          ))}
+        </div>
+      </ProSceneWrapper>
     </AbsoluteFill>
   );
 };

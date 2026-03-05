@@ -11,6 +11,7 @@ import {
   spring,
   Easing,
 } from "remotion";
+import { FONTS, TEXT_STYLES, OPACITY } from "../design-system";
 
 // ── FadeIn ──────────────────────────────────────────────────────────
 export const FadeIn: React.FC<{
@@ -247,7 +248,7 @@ export const SubtleRotate3D: React.FC<{
   delay?: number;
 }> = ({ children, maxDeg = 8, durationFrames = 30, delay = 0 }) => {
   const frame = useCurrentFrame();
-  const clamped = Math.min(maxDeg, 15); // hard cap at 15°
+  const clamped = Math.min(maxDeg, 15);
   const angle = interpolate(
     frame - delay,
     [0, durationFrames],
@@ -261,6 +262,245 @@ export const SubtleRotate3D: React.FC<{
       }}
     >
       {children}
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// HERO STACK — safe, overlap-free hero text + ghost layout
+// ═══════════════════════════════════════════════════════════════════
+
+export const HeroStack: React.FC<{
+  label?: string;
+  hero: React.ReactNode;
+  ghost?: string;
+  color?: string;
+  accentColor?: string;
+  anchor?: "left" | "center";
+  heroFontSize?: number;
+  ghostScale?: number;
+  ghostOffsetX?: string;
+  ghostOffsetY?: string;
+}> = ({
+  label,
+  hero,
+  ghost,
+  color = "#FFFFFF",
+  accentColor = "#4F8CFF",
+  anchor = "left",
+  heroFontSize = 120,
+  ghostScale = 2.2,
+  ghostOffsetX = "-4%",
+  ghostOffsetY = "15%",
+}) => {
+  const isCenter = anchor === "center";
+  return (
+    <div
+      style={{
+        position: "relative",
+        maxWidth: "92%",
+        width: "100%",
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: isCenter ? "center" : "flex-start",
+      }}
+    >
+      {/* Ghost — zIndex 0, blurred, low opacity, non-interactive */}
+      {ghost && (
+        <div
+          style={{
+            position: "absolute",
+            left: ghostOffsetX,
+            top: ghostOffsetY,
+            zIndex: 0,
+            pointerEvents: "none",
+            fontFamily: FONTS.display,
+            fontSize: heroFontSize * ghostScale,
+            fontWeight: 700,
+            lineHeight: 0.85,
+            color,
+            opacity: OPACITY.ghost,
+            filter: "blur(2px)",
+            whiteSpace: "nowrap",
+            userSelect: "none",
+          }}
+        >
+          {ghost}
+        </div>
+      )}
+
+      {/* Label badge — zIndex 3 */}
+      {label && (
+        <div
+          style={{
+            position: "relative",
+            zIndex: 3,
+            ...TEXT_STYLES.label,
+            color,
+            marginBottom: 16,
+          }}
+        >
+          {label}
+        </div>
+      )}
+
+      {/* Main hero — zIndex 2 */}
+      <div
+        style={{
+          position: "relative",
+          zIndex: 2,
+          ...TEXT_STYLES.heroNumber,
+          fontSize: heroFontSize,
+          color,
+          textAlign: isCenter ? "center" : "left",
+        }}
+      >
+        {hero}
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// PRO OVERLAYS — layered on top of every scene for production feel
+// ═══════════════════════════════════════════════════════════════════
+
+export const FilmGrain: React.FC<{
+  opacity?: number;
+}> = ({ opacity = 0.04 }) => {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: "none",
+        opacity,
+        backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='1'/%3E%3C/svg%3E")`,
+        backgroundRepeat: "repeat",
+        backgroundSize: "256px 256px",
+        mixBlendMode: "overlay",
+      }}
+    />
+  );
+};
+
+export const Vignette: React.FC<{
+  intensity?: number;
+}> = ({ intensity = 0.55 }) => {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: "none",
+        background: `radial-gradient(ellipse 80% 80% at 50% 50%, transparent 50%, rgba(0,0,0,${intensity}) 100%)`,
+      }}
+    />
+  );
+};
+
+export const AmbientGlow: React.FC<{
+  color?: string;
+  size?: number;
+  x?: string;
+  y?: string;
+  opacity?: number;
+}> = ({ color = "#4F8CFF", size = 500, x = "50%", y = "50%", opacity = 0.1 }) => {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: x,
+        top: y,
+        transform: "translate(-50%, -50%)",
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        background: color,
+        filter: `blur(${Math.round(size * 0.6)}px)`,
+        opacity,
+        pointerEvents: "none",
+      }}
+    />
+  );
+};
+
+export const GridOverlay: React.FC<{
+  columns?: number;
+  color?: string;
+  opacity?: number;
+}> = ({ columns = 8, color = "#FFFFFF", opacity = 0.03 }) => {
+  const cols = [];
+  for (let i = 1; i < columns; i++) {
+    const pct = (i / columns) * 100;
+    cols.push(
+      <div
+        key={i}
+        style={{
+          position: "absolute",
+          left: `${pct}%`,
+          top: 0,
+          bottom: 0,
+          width: 1,
+          backgroundColor: color,
+          opacity,
+        }}
+      />
+    );
+  }
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: "none",
+        mixBlendMode: "overlay",
+      }}
+    >
+      {cols}
+    </div>
+  );
+};
+
+export const FogOverlay: React.FC<{
+  color?: string;
+  x?: string;
+  y?: string;
+  opacity?: number;
+}> = ({ color = "#4F8CFF", x = "70%", y = "75%", opacity = 0.06 }) => {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: "none",
+        background: `radial-gradient(ellipse 60% 50% at ${x} ${y}, ${color} 0%, transparent 70%)`,
+        opacity,
+        mixBlendMode: "screen",
+      }}
+    />
+  );
+};
+
+// Layer order: bg → grid → glow → fog → content → grain → vignette
+export const ProSceneWrapper: React.FC<{
+  children: React.ReactNode;
+  bg?: "dark" | "light" | "subtle_gradient";
+  accentColor?: string;
+  bgStyle?: React.CSSProperties;
+}> = ({ children, bg = "dark", accentColor = "#4F8CFF", bgStyle }) => {
+  const isDark = bg !== "light";
+  return (
+    <div style={{ position: "absolute", inset: 0, ...bgStyle }}>
+      {isDark && <GridOverlay columns={8} opacity={0.03} />}
+      {isDark && <AmbientGlow color={accentColor} size={600} x="35%" y="40%" opacity={0.1} />}
+      {isDark && <FogOverlay color={accentColor} x="70%" y="75%" opacity={0.06} />}
+      <div style={{ position: "relative", zIndex: 1, width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+        {children}
+      </div>
+      {isDark && <FilmGrain opacity={0.035} />}
+      {isDark && <Vignette intensity={0.5} />}
     </div>
   );
 };
