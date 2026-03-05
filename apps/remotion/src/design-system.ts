@@ -1,50 +1,23 @@
 /**
- * SUPACUT REMOTION DESIGN SYSTEM (v3) — "Swishy Display Stack"
+ * SUPACUT REMOTION DESIGN SYSTEM (v2)
  *
- * Production-quality motion graphics. Dark gradient backgrounds with
- * asymmetric accent glow, vertical grid, fog overlay, film grain, vignette.
- * Display-stack typography: Inter for both display + UI, SF Mono for code only.
- * Serif is editorial-only and never the default.
+ * Production-quality motion graphics. Polished, cinematic feel inspired by
+ * Swishy.AI-style design: dark gradient backgrounds with radial accent glow,
+ * subtle film grain, vignette, generous whitespace, spring-physics animations,
+ * and sharp typographic hierarchy.
+ *
+ * Typography: Inter primary, SF Mono for code only, serif only for editorial.
+ * Limit to 1 accent color per scene, restrained backgrounds.
  */
-
-import type React from "react";
 
 // ── Typography ──────────────────────────────────────────────────────
 export const FONTS = {
-  display: "Inter",
-  ui: "Inter",
+  primary: "Inter",
   mono: "SF Mono, SFMono-Regular, ui-monospace, Menlo, monospace",
-  serifEditorialOnly: "Georgia, serif",
+  serif: "Georgia, serif",
 } as const;
 
 export const MAX_FONT_FAMILIES_PER_SCENE = 2;
-
-// ── Tracking + Opacity tokens ───────────────────────────────────────
-export const TRACKING = {
-  label: 0.22,
-  number: -0.02,
-} as const;
-
-export const OPACITY = {
-  label: 0.55,
-  grid: 0.10,
-  ghost: 0.12,
-} as const;
-
-// ── Text styles (reusable across all templates) ─────────────────────
-export const TEXT_STYLES = {
-  label: {
-    fontFamily: FONTS.ui,
-    letterSpacing: `${TRACKING.label}em`,
-    textTransform: "uppercase" as const,
-    opacity: OPACITY.label,
-  },
-  heroNumber: {
-    fontFamily: FONTS.display,
-    fontWeight: 800,
-    letterSpacing: `${TRACKING.number}em`,
-  },
-} as const;
 
 // ── Type scale (for consistent hierarchy) ───────────────────────────
 export const TYPE_SCALE = {
@@ -84,6 +57,7 @@ export function mutedColor(bg: "dark" | "light" | "subtle_gradient"): string {
 }
 
 // ── Pro background styles ───────────────────────────────────────────
+/** Returns a CSS background for a dark scene with a radial accent glow. */
 export function proBgStyle(
   bg: "dark" | "light" | "subtle_gradient",
   accentColor: string = PALETTE.default_accent,
@@ -91,19 +65,20 @@ export function proBgStyle(
   if (bg === "light") {
     return { backgroundColor: PALETTE.light_bg };
   }
-  const glowColor = accentColor + "18";
+  // Dark scenes get a radial glow behind the content
+  const glowColor = accentColor + "18"; // ~9% opacity
   return {
     background: `radial-gradient(ellipse 70% 50% at 50% 50%, ${glowColor} 0%, ${PALETTE.dark_bg} 100%)`,
     backgroundColor: PALETTE.dark_bg,
   };
 }
 
+// We need React types for CSSProperties
+import type React from "react";
+
 // ── Rendering defaults ──────────────────────────────────────────────
-// Portrait 9:16 to match final short-form video output (1080x1920).
-// The FFmpeg pipeline scales Remotion output to 1080x1920; rendering
-// natively at that size avoids any lossy center-crop.
-export const DEFAULT_WIDTH = 1080;
-export const DEFAULT_HEIGHT = 1920;
+export const DEFAULT_WIDTH = 1920;
+export const DEFAULT_HEIGHT = 1080;
 export const DEFAULT_FPS = 30;
 
 // ── Budget caps ─────────────────────────────────────────────────────

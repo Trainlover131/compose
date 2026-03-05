@@ -1,7 +1,7 @@
 import React from "react";
-import { AbsoluteFill, useCurrentFrame, interpolate } from "remotion";
-import { FadeIn, SlideUp, MaskReveal, DrawLine, ProSceneWrapper } from "../components/AnimationPrimitives";
-import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE, OPACITY, TEXT_STYLES } from "../design-system";
+import { AbsoluteFill } from "remotion";
+import { FadeIn, SlideUp, MaskReveal, ProSceneWrapper } from "../components/AnimationPrimitives";
+import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE } from "../design-system";
 
 export interface QuoteHighlightProps {
   quote: string;
@@ -19,91 +19,59 @@ export const QuoteHighlight: React.FC<QuoteHighlightProps> = ({
   serif = false,
 }) => {
   const foreground = fgColor(bg);
-  const fontFamily = serif ? FONTS.serifEditorialOnly : FONTS.display;
+  const fontFamily = serif ? FONTS.serif : FONTS.primary;
   const bgStyle = proBgStyle(bg, accentColor);
-  const frame = useCurrentFrame();
-
-  const ghostOp = interpolate(frame, [3, 12], [0, OPACITY.ghost], {
-    extrapolateLeft: "clamp", extrapolateRight: "clamp",
-  });
 
   return (
     <AbsoluteFill>
       <ProSceneWrapper bg={bg} accentColor={accentColor} bgStyle={bgStyle}>
-        {/* Ghost quote mark behind */}
-        <div
-          style={{
-            position: "absolute",
-            top: 400,
-            left: 30,
-            fontSize: 240,
-            fontFamily: FONTS.display,
-            fontWeight: 800,
-            color: PALETTE.white,
-            opacity: ghostOp,
-            filter: "blur(1.5px)",
-            lineHeight: 1,
-            pointerEvents: "none",
-          }}
-        >
-          &ldquo;
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", padding: "0 60px", width: "100%", position: "relative", zIndex: 1 }}>
-          {/* Accent bar */}
-          <SlideUp durationFrames={10} delay={3}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 40, padding: "0 120px" }}>
+          <SlideUp durationFrames={12} delay={0}>
             <div
               style={{
-                width: 4,
-                height: 60,
+                width: 5,
+                height: 100,
                 backgroundColor: accentColor,
-                borderRadius: 2,
-                marginBottom: 24,
+                borderRadius: 3,
+                flexShrink: 0,
                 boxShadow: `0 0 20px ${accentColor}44`,
               }}
             />
           </SlideUp>
 
-          {/* Quote text */}
-          <MaskReveal durationFrames={18} delay={6} direction="left">
-            <p
-              style={{
-                color: foreground,
-                fontSize: TYPE_SCALE.title - 4,
-                fontWeight: serif ? 400 : 600,
-                lineHeight: 1.35,
-                fontFamily,
-                fontStyle: serif ? "italic" : "normal",
-                maxWidth: 960,
-              }}
-            >
-              &ldquo;{quote}&rdquo;
-            </p>
-          </MaskReveal>
-
-          {/* Accent underline */}
-          <FadeIn durationFrames={8} delay={18}>
-            <div style={{ marginTop: 18 }}>
-              <DrawLine color={accentColor} width={70} thickness={3} durationFrames={12} delay={20} />
-            </div>
-          </FadeIn>
-
-          {/* Attribution */}
-          {attribution && (
-            <FadeIn durationFrames={10} delay={22}>
+          <div>
+            <MaskReveal durationFrames={20} delay={4} direction="left">
               <p
                 style={{
-                  ...TEXT_STYLES.label,
-                  fontSize: TYPE_SCALE.body - 2,
-                  color: PALETTE.muted,
-                  fontWeight: 500,
-                  marginTop: 14,
+                  color: foreground,
+                  fontSize: TYPE_SCALE.title + 4,
+                  fontWeight: serif ? 400 : 600,
+                  lineHeight: 1.4,
+                  fontFamily,
+                  fontStyle: serif ? "italic" : "normal",
+                  maxWidth: 1400,
                 }}
               >
-                &mdash; {attribution}
+                &ldquo;{quote}&rdquo;
               </p>
-            </FadeIn>
-          )}
+            </MaskReveal>
+
+            {attribution && (
+              <FadeIn durationFrames={12} delay={18}>
+                <p
+                  style={{
+                    color: PALETTE.muted,
+                    fontSize: TYPE_SCALE.body,
+                    fontWeight: 500,
+                    marginTop: 20,
+                    fontFamily: FONTS.primary,
+                  }}
+                >
+                  &mdash; {attribution}
+                </p>
+              </FadeIn>
+            )}
+          </div>
         </div>
       </ProSceneWrapper>
     </AbsoluteFill>

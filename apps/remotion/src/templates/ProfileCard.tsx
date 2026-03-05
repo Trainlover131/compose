@@ -1,7 +1,7 @@
 import React from "react";
-import { AbsoluteFill, useCurrentFrame, interpolate } from "remotion";
+import { AbsoluteFill } from "remotion";
 import { FadeIn, SlideUp, ScaleSpring, DrawLine, ProSceneWrapper } from "../components/AnimationPrimitives";
-import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE, OPACITY, TEXT_STYLES } from "../design-system";
+import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE } from "../design-system";
 
 export interface ProfileCardProps {
   name: string;
@@ -20,102 +20,100 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({
 }) => {
   const foreground = fgColor(bg);
   const bgStyle = proBgStyle(bg, accentColor);
-  const frame = useCurrentFrame();
-
-  const initials = name.split(" ").map(w => w.charAt(0)).join("").toUpperCase();
-  const ghostOp = interpolate(frame, [3, 12], [0, OPACITY.ghost], {
-    extrapolateLeft: "clamp", extrapolateRight: "clamp",
-  });
 
   return (
     <AbsoluteFill>
       <ProSceneWrapper bg={bg} accentColor={accentColor} bgStyle={bgStyle}>
-        {/* Ghost initials behind */}
-        <div
-          style={{
-            position: "absolute",
-            top: "50%",
-            left: "50%",
-            transform: "translate(-50%, -55%)",
-            fontSize: 220,
-            fontFamily: FONTS.display,
-            fontWeight: 800,
-            color: PALETTE.white,
-            opacity: ghostOp,
-            filter: "blur(2px)",
-            pointerEvents: "none",
-            lineHeight: 1,
-          }}
-        >
-          {initials}
-        </div>
-
-        {/* Content — centered for portrait */}
-        <div style={{ padding: "0 60px", width: "100%", textAlign: "center", position: "relative", zIndex: 1 }}>
-          <div style={{ display: "flex", justifyContent: "center" }}>
-            <ScaleSpring delay={3}>
-              <div
-                style={{
-                  width: 80,
-                  height: 80,
-                  borderRadius: 40,
-                  backgroundColor: accentColor,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  marginBottom: 20,
-                  boxShadow: `0 0 40px ${accentColor}33`,
-                }}
-              >
-                <span style={{ color: "#FFFFFF", fontSize: 32, fontWeight: 700, fontFamily: FONTS.display }}>
-                  {name.charAt(0).toUpperCase()}
-                </span>
-              </div>
-            </ScaleSpring>
+        <ScaleSpring delay={0}>
+          <div
+            style={{
+              width: 110,
+              height: 110,
+              borderRadius: 55,
+              backgroundColor: accentColor,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              marginBottom: 24,
+              boxShadow: `0 0 40px ${accentColor}33`,
+            }}
+          >
+            <span style={{ color: "#FFFFFF", fontSize: 44, fontWeight: 700, fontFamily: FONTS.primary }}>
+              {name.charAt(0).toUpperCase()}
+            </span>
           </div>
+        </ScaleSpring>
 
-          <SlideUp durationFrames={12} delay={7} distance={18}>
-            <h1
+        <SlideUp durationFrames={14} delay={6} distance={20}>
+          <h1
+            style={{
+              color: foreground,
+              fontSize: TYPE_SCALE.title + 4,
+              fontWeight: 700,
+              textAlign: "center",
+              fontFamily: FONTS.primary,
+            }}
+          >
+            {name}
+          </h1>
+        </SlideUp>
+
+        {role && (
+          <FadeIn durationFrames={10} delay={12}>
+            <p
               style={{
-                color: foreground,
-                fontSize: TYPE_SCALE.title + 4,
-                fontWeight: 700,
-                fontFamily: FONTS.display,
+                color: PALETTE.muted,
+                fontSize: TYPE_SCALE.body + 2,
+                fontWeight: 500,
+                marginTop: 6,
+                textAlign: "center",
+                fontFamily: FONTS.primary,
               }}
             >
-              {name}
-            </h1>
-          </SlideUp>
-
-          {role && (
-            <FadeIn durationFrames={10} delay={12}>
-              <p style={{ color: PALETTE.muted, fontSize: TYPE_SCALE.body, fontWeight: 500, marginTop: 4, fontFamily: FONTS.ui }}>
-                {role}
-              </p>
-            </FadeIn>
-          )}
-
-          <FadeIn durationFrames={8} delay={15}>
-            <div style={{ marginTop: 14, display: "flex", justifyContent: "center" }}>
-              <DrawLine color={accentColor} width={50} thickness={3} durationFrames={10} delay={17} />
-            </div>
+              {role}
+            </p>
           </FadeIn>
+        )}
 
-          {bullets.length > 0 && (
-            <div style={{ marginTop: 22, display: "flex", flexDirection: "column", gap: 10, alignItems: "center" }}>
-              {bullets.slice(0, 4).map((b, i) => (
-                <FadeIn key={i} durationFrames={8} delay={20 + i * 3}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: accentColor, flexShrink: 0 }} />
-                    <p style={{ color: foreground, fontSize: TYPE_SCALE.body - 2, fontWeight: 400, fontFamily: FONTS.ui }}>
-                      {b}
-                    </p>
-                  </div>
-                </FadeIn>
-              ))}
-            </div>
-          )}
-        </div>
+        <FadeIn durationFrames={10} delay={14}>
+          <DrawLine
+            color={accentColor}
+            width={70}
+            thickness={3}
+            durationFrames={12}
+            delay={16}
+          />
+        </FadeIn>
+
+        {bullets.length > 0 && (
+          <div style={{ marginTop: 28, display: "flex", flexDirection: "column", gap: 10 }}>
+            {bullets.slice(0, 4).map((b, i) => (
+              <FadeIn key={i} durationFrames={10} delay={18 + i * 4}>
+                <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                  <div
+                    style={{
+                      width: 7,
+                      height: 7,
+                      borderRadius: 4,
+                      backgroundColor: accentColor,
+                      flexShrink: 0,
+                    }}
+                  />
+                  <p
+                    style={{
+                      color: foreground,
+                      fontSize: TYPE_SCALE.body,
+                      fontWeight: 400,
+                      fontFamily: FONTS.primary,
+                    }}
+                  >
+                    {b}
+                  </p>
+                </div>
+              </FadeIn>
+            ))}
+          </div>
+        )}
       </ProSceneWrapper>
     </AbsoluteFill>
   );

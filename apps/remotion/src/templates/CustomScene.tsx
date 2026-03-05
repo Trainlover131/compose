@@ -1,8 +1,9 @@
 /**
  * CustomRemotionScene: renders a CustomRemotionSceneSpec into a composition.
  *
- * V3 — uses Swishy display stack (ProSceneWrapper + typography tokens).
- * Portrait 1080x1920 layout.
+ * This is the V2 path. The spec is a strict JSON contract — NOT a freeform
+ * prompt. Every element compiles down to the allowed animation primitives
+ * from the SUPACUT design system.
  */
 import React from "react";
 import { AbsoluteFill } from "remotion";
@@ -19,7 +20,7 @@ import {
   SubtleRotate3D,
   ProSceneWrapper,
 } from "../components/AnimationPrimitives";
-import { FONTS, PALETTE, BUDGET, proBgStyle, fgColor, TYPE_SCALE, TEXT_STYLES } from "../design-system";
+import { FONTS, PALETTE, BUDGET, proBgStyle, fgColor, TYPE_SCALE } from "../design-system";
 import type { MotionPrimitive } from "../design-system";
 
 // ── CustomRemotionSceneSpec types ───────────────────────────────────
@@ -110,9 +111,6 @@ const ElementRenderer: React.FC<{
   fontFamily: string;
 }> = ({ el, index, foreground, accentColor, fontFamily }) => {
   const primitive = el.animation_primitives[0] || "FadeIn";
-  const resolvedFont = fontFamily === "Georgia" || fontFamily === "Georgia, serif"
-    ? FONTS.display
-    : (fontFamily || FONTS.display);
 
   let content: React.ReactNode;
 
@@ -122,11 +120,11 @@ const ElementRenderer: React.FC<{
         <p
           style={{
             color: foreground,
-            fontSize: TYPE_SCALE.title - 8,
+            fontSize: TYPE_SCALE.title - 4,
             fontWeight: 600,
-            fontFamily: resolvedFont,
+            fontFamily,
             textAlign: el.layout === "center" ? "center" : "left",
-            maxWidth: 960,
+            maxWidth: 1400,
             lineHeight: 1.4,
           }}
         >
@@ -140,12 +138,13 @@ const ElementRenderer: React.FC<{
           value={Number(el.data?.value ?? 0)}
           prefix={String(el.data?.prefix ?? "")}
           suffix={String(el.data?.suffix ?? "")}
-          durationFrames={25}
+          durationFrames={35}
           delay={index * 5}
           style={{
-            ...TEXT_STYLES.heroNumber,
-            fontSize: TYPE_SCALE.hero - 24,
             color: foreground,
+            fontSize: TYPE_SCALE.hero - 16,
+            fontWeight: 700,
+            fontFamily,
           }}
         />
       );
@@ -154,9 +153,9 @@ const ElementRenderer: React.FC<{
       content = (
         <DrawLine
           color={accentColor}
-          width={Number(el.data?.width ?? 100)}
+          width={Number(el.data?.width ?? 120)}
           thickness={Number(el.data?.thickness ?? 3)}
-          durationFrames={14}
+          durationFrames={16}
           delay={index * 5}
         />
       );
@@ -165,18 +164,18 @@ const ElementRenderer: React.FC<{
       content = (
         <div
           style={{
-            width: Number(el.data?.width ?? 60),
-            height: Number(el.data?.height ?? 60),
+            width: Number(el.data?.width ?? 80),
+            height: Number(el.data?.height ?? 80),
             backgroundColor: accentColor,
             borderRadius: Number(el.data?.borderRadius ?? 8),
-            boxShadow: `0 0 20px ${accentColor}22`,
+            boxShadow: `0 0 24px ${accentColor}22`,
           }}
         />
       );
       break;
     default:
       content = (
-        <p style={{ color: foreground, fontSize: TYPE_SCALE.subtitle - 2, fontFamily: resolvedFont }}>
+        <p style={{ color: foreground, fontSize: TYPE_SCALE.subtitle, fontFamily }}>
           {el.text || ""}
         </p>
       );
@@ -189,10 +188,7 @@ const ElementRenderer: React.FC<{
 
 export const CustomScene: React.FC<CustomSceneProps> = ({ spec }) => {
   const foreground = fgColor(spec.bg);
-  const rawFont = spec.typography.primary_font || FONTS.display;
-  const fontFamily = rawFont === "Georgia" || rawFont === "Georgia, serif"
-    ? FONTS.display
-    : rawFont;
+  const fontFamily = spec.typography.primary_font || FONTS.primary;
   const accentColor = spec.accent_color || PALETTE.default_accent;
   const bgStyle = proBgStyle(spec.bg, accentColor);
 
@@ -211,10 +207,9 @@ export const CustomScene: React.FC<CustomSceneProps> = ({ spec }) => {
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            gap: 16,
-            padding: "0 60px",
+            gap: 20,
+            padding: "0 120px",
             fontFamily,
-            width: "100%",
           }}
         >
           {elements.map((el, i) => (
