@@ -21,7 +21,7 @@ import type { CodeCardProps } from "./templates/CodeCard";
 import { CustomScene } from "./templates/CustomScene";
 import type { CustomSceneProps } from "./templates/CustomScene";
 
-const DEFAULT_DURATION_SEC = 4;
+const DEFAULT_DURATION_SEC = 3;
 
 /**
  * Wrapper that blocks rendering until Google Fonts are loaded.
@@ -159,7 +159,7 @@ export const Root: React.FC = () => {
         defaultProps={{
           spec: {
             scene_kind: "headline_highlight" as const,
-            duration_sec: 4,
+            duration_sec: 3,
             bg: "dark" as const,
             accent_color: "#4F8CFF",
             typography: {

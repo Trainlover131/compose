@@ -46,7 +46,7 @@ export const LineChart: React.FC<LineChartProps> = ({
   const rangeX = maxX - minX || 1;
   const rangeY = maxY - minY || 1;
 
-  const drawProgress = interpolate(frame, [8, Math.min(50, durationInFrames - 10)], [0, 1], {
+  const drawProgress = interpolate(frame, [6, Math.min(40, durationInFrames - 8)], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
     easing: Easing.out(Easing.cubic),

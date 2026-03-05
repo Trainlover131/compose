@@ -51,6 +51,7 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({
               fontWeight: 700,
               fontFamily: FONTS.display,
               textAlign: "center",
+              fontFamily: FONTS.primary,
             }}
           >
             {name}

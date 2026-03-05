@@ -6,7 +6,7 @@
  * from the SUPACUT design system.
  */
 import React from "react";
-import { AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate, Easing } from "remotion";
+import { AbsoluteFill } from "remotion";
 import {
   FadeIn,
   SlideUp,
@@ -78,26 +78,26 @@ function wrapPrimitive(
   children: React.ReactNode,
   index: number,
 ): React.ReactNode {
-  const delay = index * 6;
+  const delay = index * 5;
   switch (primitive) {
     case "FadeIn":
-      return <FadeIn durationFrames={15} delay={delay}>{children}</FadeIn>;
+      return <FadeIn durationFrames={12} delay={delay}>{children}</FadeIn>;
     case "SlideUp":
-      return <SlideUp durationFrames={18} delay={delay}>{children}</SlideUp>;
+      return <SlideUp durationFrames={14} delay={delay}>{children}</SlideUp>;
     case "SlideLeft":
-      return <SlideLeft durationFrames={18} delay={delay}>{children}</SlideLeft>;
+      return <SlideLeft durationFrames={14} delay={delay}>{children}</SlideLeft>;
     case "ScaleSpring":
       return <ScaleSpring delay={delay}>{children}</ScaleSpring>;
     case "MaskReveal":
-      return <MaskReveal durationFrames={20} delay={delay}>{children}</MaskReveal>;
+      return <MaskReveal durationFrames={16} delay={delay}>{children}</MaskReveal>;
     case "HighlightSweep":
-      return <HighlightSweep durationFrames={20} delay={delay}>{children}</HighlightSweep>;
+      return <HighlightSweep durationFrames={16} delay={delay}>{children}</HighlightSweep>;
     case "SoftZoom":
       return <SoftZoom delay={delay}>{children}</SoftZoom>;
     case "SubtleRotate3D":
-      return <SubtleRotate3D durationFrames={25} delay={delay}>{children}</SubtleRotate3D>;
+      return <SubtleRotate3D durationFrames={20} delay={delay}>{children}</SubtleRotate3D>;
     default:
-      return <FadeIn durationFrames={15} delay={delay}>{children}</FadeIn>;
+      return <FadeIn durationFrames={12} delay={delay}>{children}</FadeIn>;
   }
 }
 
@@ -138,8 +138,8 @@ const ElementRenderer: React.FC<{
           value={Number(el.data?.value ?? 0)}
           prefix={String(el.data?.prefix ?? "")}
           suffix={String(el.data?.suffix ?? "")}
-          durationFrames={45}
-          delay={index * 6}
+          durationFrames={35}
+          delay={index * 5}
           style={{
             color: foreground,
             fontSize: 88,
@@ -155,8 +155,8 @@ const ElementRenderer: React.FC<{
           color={accentColor}
           width={Number(el.data?.width ?? 120)}
           thickness={Number(el.data?.thickness ?? 3)}
-          durationFrames={20}
-          delay={index * 6}
+          durationFrames={16}
+          delay={index * 5}
         />
       );
       break;
@@ -168,6 +168,7 @@ const ElementRenderer: React.FC<{
             height: Number(el.data?.height ?? 80),
             backgroundColor: accentColor,
             borderRadius: Number(el.data?.borderRadius ?? 8),
+            boxShadow: `0 0 24px ${accentColor}22`,
           }}
         />
       );

@@ -23,7 +23,7 @@ export const CodeCard: React.FC<CodeCardProps> = ({
   const lines = code.split("\n");
   const totalChars = code.length;
   const revealedChars = Math.round(
-    interpolate(frame, [10, Math.max(20, 10 + totalChars * 0.6)], [0, totalChars], {
+    interpolate(frame, [8, Math.max(18, 8 + totalChars * 0.5)], [0, totalChars], {
       extrapolateLeft: "clamp",
       extrapolateRight: "clamp",
       easing: Easing.out(Easing.cubic),
@@ -38,8 +38,8 @@ export const CodeCard: React.FC<CodeCardProps> = ({
     return line.substring(0, visible);
   });
 
-  const codeBgColor = bg === "dark" ? "#1A1A2E" : "#F0F0F5";
-  const codeFrameColor = bg === "dark" ? "#2A2A3E" : "#E0E0E8";
+  const codeBgColor = bg === "dark" ? "#111118" : "#F0F0F5";
+  const codeFrameColor = bg === "dark" ? "#222233" : "#E0E0E8";
 
   return (
     <AbsoluteFill>
