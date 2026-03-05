@@ -1,5 +1,5 @@
 /**
- * Reusable animation primitives from the SUPACUT design system (v3).
+ * Reusable animation primitives from the SUPACUT design system.
  * These are the ONLY motion effects allowed. Any custom scene must
  * compile down to compositions of these primitives.
  */
@@ -11,7 +11,6 @@ import {
   spring,
   Easing,
 } from "remotion";
-import { FONTS, PALETTE, OPACITY, TEXT_STYLES, TYPE_SCALE, TRACKING } from "../design-system";
 
 // ── FadeIn ──────────────────────────────────────────────────────────
 export const FadeIn: React.FC<{
@@ -248,7 +247,7 @@ export const SubtleRotate3D: React.FC<{
   delay?: number;
 }> = ({ children, maxDeg = 8, durationFrames = 30, delay = 0 }) => {
   const frame = useCurrentFrame();
-  const clamped = Math.min(maxDeg, 15);
+  const clamped = Math.min(maxDeg, 15); // hard cap at 15°
   const angle = interpolate(
     frame - delay,
     [0, durationFrames],
@@ -267,101 +266,71 @@ export const SubtleRotate3D: React.FC<{
 };
 
 // ═══════════════════════════════════════════════════════════════════
-// SWISHY DISPLAY STACK — background depth + overlays + layout prims
+// PRO OVERLAYS — layered on top of every scene for production feel
 // ═══════════════════════════════════════════════════════════════════
-
-// ── GridOverlay (vertical lines for Swishy grid feel) ───────────────
-export const GridOverlay: React.FC<{ opacity?: number }> = ({ opacity = 0.10 }) => (
-  <div
-    style={{
-      position: "absolute",
-      inset: 0,
-      pointerEvents: "none",
-      opacity,
-      backgroundImage: `linear-gradient(to right, rgba(255,255,255,0.10) 1px, transparent 1px)`,
-      backgroundSize: "180px 100%",
-      mixBlendMode: "overlay",
-    }}
-  />
-);
 
 // ── FilmGrain (SVG noise overlay for texture) ───────────────────────
 export const FilmGrain: React.FC<{
   opacity?: number;
-}> = ({ opacity = 0.04 }) => (
-  <div
-    style={{
-      position: "absolute",
-      inset: 0,
-      pointerEvents: "none",
-      opacity,
-      backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='1'/%3E%3C/svg%3E")`,
-      backgroundRepeat: "repeat",
-      backgroundSize: "256px 256px",
-      mixBlendMode: "overlay",
-    }}
-  />
-);
-
-// ── Vignette (edge darkening for focus) ─────────────────────────────
-export const Vignette: React.FC<{
-  intensity?: number;
-}> = ({ intensity = 0.55 }) => (
-  <div
-    style={{
-      position: "absolute",
-      inset: 0,
-      pointerEvents: "none",
-      background: `radial-gradient(ellipse 80% 80% at 50% 50%, transparent 50%, rgba(0,0,0,${intensity}) 100%)`,
-    }}
-  />
-);
-
-// ── AmbientGlow (positionable soft colored glow) ────────────────────
-export const AmbientGlow: React.FC<{
-  color?: string;
-  size?: number;
-  x?: string;
-  y?: string;
-  opacity?: number;
-}> = ({ color = "#FF4444", size = 700, x = "70%", y = "70%", opacity: op = 0.14 }) => (
-  <div
-    style={{
-      position: "absolute",
-      left: x,
-      top: y,
-      transform: "translate(-50%, -50%)",
-      width: size,
-      height: size,
-      borderRadius: "50%",
-      background: color,
-      filter: `blur(${Math.round(size * 0.55)}px)`,
-      opacity: op,
-      pointerEvents: "none",
-    }}
-  />
-);
-
-// ── FogOverlay (radial screen-blend fog) ────────────────────────────
-export const FogOverlay: React.FC<{
-  color?: string;
-  opacity?: number;
-}> = ({ color = "#FF4444", opacity: op = 0.22 }) => {
-  const hex = Math.round(op * 255).toString(16).padStart(2, "0");
+}> = ({ opacity = 0.04 }) => {
   return (
     <div
       style={{
         position: "absolute",
         inset: 0,
         pointerEvents: "none",
-        background: `radial-gradient(ellipse 80% 55% at 70% 75%, ${color}${hex} 0%, transparent 60%)`,
-        mixBlendMode: "screen",
+        opacity,
+        backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='1'/%3E%3C/svg%3E")`,
+        backgroundRepeat: "repeat",
+        backgroundSize: "256px 256px",
+        mixBlendMode: "overlay",
       }}
     />
   );
 };
 
-// ── ProSceneWrapper (full Swishy depth stack) ───────────────────────
+// ── Vignette (edge darkening for focus) ─────────────────────────────
+export const Vignette: React.FC<{
+  intensity?: number;
+}> = ({ intensity = 0.55 }) => {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: "none",
+        background: `radial-gradient(ellipse 80% 80% at 50% 50%, transparent 50%, rgba(0,0,0,${intensity}) 100%)`,
+      }}
+    />
+  );
+};
+
+// ── AmbientGlow (soft colored glow behind content) ──────────────────
+export const AmbientGlow: React.FC<{
+  color?: string;
+  size?: number;
+  y?: string;
+}> = ({ color = "#4F8CFF", size = 500, y = "50%" }) => {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: "50%",
+        top: y,
+        transform: "translate(-50%, -50%)",
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        background: color,
+        filter: `blur(${Math.round(size * 0.6)}px)`,
+        opacity: 0.1,
+        pointerEvents: "none",
+      }}
+    />
+  );
+};
+
+// ── ProSceneWrapper (combines all pro overlays) ─────────────────────
 export const ProSceneWrapper: React.FC<{
   children: React.ReactNode;
   bg?: "dark" | "light" | "subtle_gradient";
@@ -371,172 +340,16 @@ export const ProSceneWrapper: React.FC<{
   const isDark = bg !== "light";
   return (
     <div style={{ position: "absolute", inset: 0, ...bgStyle }}>
-      {/* Layer 1: Grid */}
-      {isDark && <GridOverlay opacity={OPACITY.grid} />}
-      {/* Layer 2: Asymmetric ambient glow (bottom-right) */}
-      {isDark && <AmbientGlow color={accentColor} size={850} x="70%" y="75%" opacity={0.16} />}
-      {/* Layer 3: Fog overlay */}
-      {isDark && <FogOverlay color={accentColor} opacity={0.20} />}
-      {/* Layer 4: Main content */}
+      {/* Ambient glow behind content */}
+      {isDark && <AmbientGlow color={accentColor} size={600} />}
+      {/* Main content */}
       <div style={{ position: "relative", zIndex: 1, width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
         {children}
       </div>
-      {/* Layer 5: Film grain */}
-      {isDark && <FilmGrain opacity={0.03} />}
-      {/* Layer 6: Vignette */}
+      {/* Film grain overlay */}
+      {isDark && <FilmGrain opacity={0.035} />}
+      {/* Vignette overlay */}
       {isDark && <Vignette intensity={0.5} />}
-    </div>
-  );
-};
-
-// ═══════════════════════════════════════════════════════════════════
-// SWISHY LAYOUT PRIMITIVES
-// ═══════════════════════════════════════════════════════════════════
-
-// ── HeroStack (label + hero value + ghost value behind) ─────────────
-export const HeroStack: React.FC<{
-  label: string;
-  value: string;
-  accentColor?: string;
-  ghostValue?: string;
-  align?: "left" | "center";
-  top?: number;
-}> = ({ label, value, accentColor = PALETTE.default_accent, ghostValue, align = "left", top = 0 }) => {
-  const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
-
-  // Label fades in frames 5-12
-  const labelOp = interpolate(frame, [5, 12], [0, 1], {
-    extrapolateLeft: "clamp", extrapolateRight: "clamp",
-  });
-
-  // Hero springs in frames 5-18
-  const heroScale = spring({
-    frame: Math.max(0, frame - 5),
-    fps,
-    config: { damping: 14, stiffness: 120, mass: 0.9 },
-  });
-
-  const ghost = ghostValue ?? value;
-  const textAlign = align === "center" ? ("center" as const) : ("left" as const);
-  const alignItems = align === "center" ? "center" : "flex-start";
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems,
-        position: "relative",
-        paddingTop: top,
-      }}
-    >
-      {/* Label */}
-      <div
-        style={{
-          ...TEXT_STYLES.label,
-          fontSize: TYPE_SCALE.subtitle,
-          color: PALETTE.white,
-          marginBottom: 8,
-          opacity: labelOp * OPACITY.label,
-          textAlign,
-        }}
-      >
-        {label}
-      </div>
-
-      {/* Ghost value behind */}
-      <div
-        style={{
-          position: "absolute",
-          top: top + TYPE_SCALE.subtitle + 8 - 20,
-          left: align === "center" ? "50%" : 0,
-          transform: align === "center" ? "translateX(-50%)" : "none",
-          ...TEXT_STYLES.heroNumber,
-          fontSize: TYPE_SCALE.hero + 40,
-          color: PALETTE.white,
-          opacity: OPACITY.ghost,
-          filter: "blur(2px)",
-          pointerEvents: "none",
-          whiteSpace: "nowrap",
-          textAlign,
-        }}
-      >
-        {ghost}
-      </div>
-
-      {/* Hero value */}
-      <div
-        style={{
-          ...TEXT_STYLES.heroNumber,
-          fontSize: TYPE_SCALE.hero,
-          color: PALETTE.white,
-          transform: `scale(${heroScale})`,
-          opacity: interpolate(heroScale, [0, 0.5], [0, 1], { extrapolateRight: "clamp" }),
-          position: "relative",
-          zIndex: 1,
-          whiteSpace: "nowrap",
-          textAlign,
-        }}
-      >
-        {value}
-      </div>
-    </div>
-  );
-};
-
-// ── CornerBadge (small rounded pill, top-right) ─────────────────────
-export const CornerBadge: React.FC<{
-  label: string;
-  value: string;
-}> = ({ label, value }) => {
-  const frame = useCurrentFrame();
-  const op = interpolate(frame, [18, 28], [0, 1], {
-    extrapolateLeft: "clamp", extrapolateRight: "clamp",
-  });
-  const slide = interpolate(frame, [18, 28], [12, 0], {
-    extrapolateLeft: "clamp", extrapolateRight: "clamp",
-    easing: Easing.out(Easing.cubic),
-  });
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        top: 48,
-        right: 48,
-        zIndex: 2,
-        opacity: op,
-        transform: `translateY(${slide}px)`,
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        backgroundColor: "rgba(255,255,255,0.08)",
-        border: "1px solid rgba(255,255,255,0.12)",
-        borderRadius: 16,
-        padding: "10px 18px",
-      }}
-    >
-      <span
-        style={{
-          ...TEXT_STYLES.label,
-          fontSize: TYPE_SCALE.micro,
-          color: PALETTE.white,
-          opacity: 0.6,
-        }}
-      >
-        {label}
-      </span>
-      <span
-        style={{
-          fontFamily: FONTS.display,
-          fontWeight: 700,
-          fontSize: TYPE_SCALE.caption,
-          color: PALETTE.white,
-        }}
-      >
-        {value}
-      </span>
     </div>
   );
 };
