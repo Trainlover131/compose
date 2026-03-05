@@ -1,5 +1,7 @@
 import React from "react";
 import { Composition } from "remotion";
+// Load fonts before any composition renders
+import "./fonts";
 import { DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_FPS } from "./design-system";
 
 import { KpiCounter } from "./templates/KpiCounter";

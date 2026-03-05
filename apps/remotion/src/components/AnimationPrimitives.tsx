@@ -11,6 +11,7 @@ import {
   spring,
   Easing,
 } from "remotion";
+import { FONTS, TEXT_STYLES, OPACITY } from "../design-system";
 
 // ── FadeIn ──────────────────────────────────────────────────────────
 export const FadeIn: React.FC<{
@@ -266,6 +267,112 @@ export const SubtleRotate3D: React.FC<{
 };
 
 // ═══════════════════════════════════════════════════════════════════
+// HERO STACK — safe, overlap-free hero text + ghost layout
+// ═══════════════════════════════════════════════════════════════════
+
+export const HeroStack: React.FC<{
+  /** Small uppercase tracked label above the hero */
+  label?: string;
+  /** Main hero text (large number/headline) */
+  hero: React.ReactNode;
+  /** Large background echo text behind the hero */
+  ghost?: string;
+  /** Text color for the hero */
+  color?: string;
+  /** Accent color for the label badge */
+  accentColor?: string;
+  /** Horizontal alignment */
+  anchor?: "left" | "center";
+  /** Font size for the hero (defaults to design-system TYPE_SCALE.hero) */
+  heroFontSize?: number;
+  /** Ghost font size multiplier relative to heroFontSize (default 2.2) */
+  ghostScale?: number;
+  /** Ghost horizontal offset (default "-6%") */
+  ghostOffsetX?: string;
+  /** Ghost vertical offset (default "18%") */
+  ghostOffsetY?: string;
+}> = ({
+  label,
+  hero,
+  ghost,
+  color = "#FFFFFF",
+  accentColor = "#4F8CFF",
+  anchor = "left",
+  heroFontSize = 128,
+  ghostScale = 2.2,
+  ghostOffsetX = "-6%",
+  ghostOffsetY = "18%",
+}) => {
+  const isCenter = anchor === "center";
+  return (
+    <div
+      style={{
+        position: "relative",
+        maxWidth: "92%",
+        width: "100%",
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: isCenter ? "center" : "flex-start",
+      }}
+    >
+      {/* Ghost — zIndex 0, blurred, low opacity, pointer-events none */}
+      {ghost && (
+        <div
+          style={{
+            position: "absolute",
+            left: ghostOffsetX,
+            top: ghostOffsetY,
+            zIndex: 0,
+            pointerEvents: "none",
+            fontFamily: FONTS.display,
+            fontSize: heroFontSize * ghostScale,
+            fontWeight: 700,
+            lineHeight: 0.85,
+            color,
+            opacity: OPACITY.ghost,
+            filter: "blur(2px)",
+            whiteSpace: "nowrap",
+            userSelect: "none",
+          }}
+        >
+          {ghost}
+        </div>
+      )}
+
+      {/* Label badge — zIndex 3 */}
+      {label && (
+        <div
+          style={{
+            position: "relative",
+            zIndex: 3,
+            ...TEXT_STYLES.label,
+            color,
+            marginBottom: 16,
+          }}
+        >
+          {label}
+        </div>
+      )}
+
+      {/* Main hero — zIndex 2, exactly ONE node */}
+      <div
+        style={{
+          position: "relative",
+          zIndex: 2,
+          ...TEXT_STYLES.heroNumber,
+          fontSize: heroFontSize,
+          color,
+          textAlign: isCenter ? "center" : "left",
+        }}
+      >
+        {hero}
+      </div>
+    </div>
+  );
+};
+
+// ═══════════════════════════════════════════════════════════════════
 // PRO OVERLAYS — layered on top of every scene for production feel
 // ═══════════════════════════════════════════════════════════════════
 
@@ -309,13 +416,15 @@ export const Vignette: React.FC<{
 export const AmbientGlow: React.FC<{
   color?: string;
   size?: number;
+  x?: string;
   y?: string;
-}> = ({ color = "#4F8CFF", size = 500, y = "50%" }) => {
+  opacity?: number;
+}> = ({ color = "#4F8CFF", size = 500, x = "50%", y = "50%", opacity = 0.1 }) => {
   return (
     <div
       style={{
         position: "absolute",
-        left: "50%",
+        left: x,
         top: y,
         transform: "translate(-50%, -50%)",
         width: size,
@@ -323,14 +432,81 @@ export const AmbientGlow: React.FC<{
         borderRadius: "50%",
         background: color,
         filter: `blur(${Math.round(size * 0.6)}px)`,
-        opacity: 0.1,
+        opacity,
         pointerEvents: "none",
       }}
     />
   );
 };
 
-// ── ProSceneWrapper (combines all pro overlays) ─────────────────────
+// ── GridOverlay (subtle vertical divisions) ─────────────────────────
+export const GridOverlay: React.FC<{
+  columns?: number;
+  color?: string;
+  opacity?: number;
+}> = ({ columns = 12, color = "#FFFFFF", opacity = 0.03 }) => {
+  const cols = [];
+  for (let i = 1; i < columns; i++) {
+    const pct = (i / columns) * 100;
+    cols.push(
+      <div
+        key={i}
+        style={{
+          position: "absolute",
+          left: `${pct}%`,
+          top: 0,
+          bottom: 0,
+          width: 1,
+          backgroundColor: color,
+          opacity,
+        }}
+      />
+    );
+  }
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: "none",
+        mixBlendMode: "overlay",
+      }}
+    >
+      {cols}
+    </div>
+  );
+};
+
+// ── FogOverlay (accent-colored radial screen blend) ─────────────────
+export const FogOverlay: React.FC<{
+  color?: string;
+  x?: string;
+  y?: string;
+  opacity?: number;
+}> = ({ color = "#4F8CFF", x = "75%", y = "80%", opacity = 0.06 }) => {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: "none",
+        background: `radial-gradient(ellipse 60% 50% at ${x} ${y}, ${color} 0%, transparent 70%)`,
+        opacity,
+        mixBlendMode: "screen",
+      }}
+    />
+  );
+};
+
+// ── ProSceneWrapper (combines all pro overlays in correct order) ─────
+// Layering order:
+//   1) Base background
+//   2) GridOverlay
+//   3) AmbientGlow (asymmetric)
+//   4) FogOverlay (asymmetric)
+//   5) Content (children)
+//   6) FilmGrain
+//   7) Vignette
 export const ProSceneWrapper: React.FC<{
   children: React.ReactNode;
   bg?: "dark" | "light" | "subtle_gradient";
@@ -340,15 +516,19 @@ export const ProSceneWrapper: React.FC<{
   const isDark = bg !== "light";
   return (
     <div style={{ position: "absolute", inset: 0, ...bgStyle }}>
-      {/* Ambient glow behind content */}
-      {isDark && <AmbientGlow color={accentColor} size={600} />}
-      {/* Main content */}
+      {/* 2) Grid overlay */}
+      {isDark && <GridOverlay columns={12} opacity={0.03} />}
+      {/* 3) Ambient glow — offset for asymmetry */}
+      {isDark && <AmbientGlow color={accentColor} size={700} x="35%" y="45%" opacity={0.1} />}
+      {/* 4) Fog overlay — bottom-right accent region */}
+      {isDark && <FogOverlay color={accentColor} x="75%" y="80%" opacity={0.06} />}
+      {/* 5) Main content */}
       <div style={{ position: "relative", zIndex: 1, width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
         {children}
       </div>
-      {/* Film grain overlay */}
+      {/* 6) Film grain overlay */}
       {isDark && <FilmGrain opacity={0.035} />}
-      {/* Vignette overlay */}
+      {/* 7) Vignette overlay */}
       {isDark && <Vignette intensity={0.5} />}
     </div>
   );

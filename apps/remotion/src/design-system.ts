@@ -6,14 +6,30 @@
  * subtle film grain, vignette, generous whitespace, spring-physics animations,
  * and sharp typographic hierarchy.
  *
- * Typography: Inter primary, SF Mono for code only, serif only for editorial.
+ * Typography: Inter primary, Space Grotesk display, SF Mono for code only.
+ * Serif is never a default — only used if explicitly requested (e.g. QuoteHighlight serif=true).
  * Limit to 1 accent color per scene, restrained backgrounds.
  */
 
+// We need React types for CSSProperties
+import type React from "react";
+
+import { interFamily, spaceGroteskFamily } from "./fonts";
+
+// ── Sans fallback stack (never serif) ────────────────────────────────
+const SANS_FALLBACK = ", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif";
+
 // ── Typography ──────────────────────────────────────────────────────
 export const FONTS = {
-  primary: "Inter",
+  /** UI / body text — Inter loaded via @remotion/google-fonts */
+  ui: interFamily + SANS_FALLBACK,
+  /** Display / headline — Space Grotesk loaded via @remotion/google-fonts */
+  display: spaceGroteskFamily + SANS_FALLBACK,
+  /** Code — system monospace stack */
   mono: "SF Mono, SFMono-Regular, ui-monospace, Menlo, monospace",
+  /** Legacy alias — always resolves to ui (sans). Never serif by default. */
+  primary: interFamily + SANS_FALLBACK,
+  /** Serif — only for explicit opt-in (e.g. QuoteHighlight serif=true) */
   serif: "Georgia, serif",
 } as const;
 
@@ -27,6 +43,42 @@ export const TYPE_SCALE = {
   body: 28,        // body text, bullets
   caption: 22,     // muted captions, axis labels
   micro: 16,       // fine print
+} as const;
+
+// ── Tracking (letter-spacing tokens) ────────────────────────────────
+export const TRACKING = {
+  /** Small uppercase labels */
+  label: "0.14em",
+  /** Large hero numbers */
+  number: "-0.03em",
+} as const;
+
+// ── Opacity tokens ──────────────────────────────────────────────────
+export const OPACITY = {
+  /** Small label badges */
+  label: 0.6,
+  /** Ghost / background echo text */
+  ghost: 0.07,
+} as const;
+
+// ── Reusable text style objects ─────────────────────────────────────
+export const TEXT_STYLES = {
+  label: {
+    fontFamily: FONTS.ui,
+    fontSize: TYPE_SCALE.subtitle,
+    fontWeight: 600,
+    letterSpacing: TRACKING.label,
+    textTransform: "uppercase" as const,
+    opacity: OPACITY.label,
+    lineHeight: 1.2,
+  } satisfies React.CSSProperties,
+  heroNumber: {
+    fontFamily: FONTS.display,
+    fontSize: TYPE_SCALE.hero,
+    fontWeight: 700,
+    letterSpacing: TRACKING.number,
+    lineHeight: 0.95,
+  } satisfies React.CSSProperties,
 } as const;
 
 // ── Colors ──────────────────────────────────────────────────────────
@@ -72,9 +124,6 @@ export function proBgStyle(
     backgroundColor: PALETTE.dark_bg,
   };
 }
-
-// We need React types for CSSProperties
-import type React from "react";
 
 // ── Rendering defaults ──────────────────────────────────────────────
 export const DEFAULT_WIDTH = 1920;
