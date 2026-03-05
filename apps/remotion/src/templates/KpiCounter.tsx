@@ -8,7 +8,7 @@ import {
   ProSceneWrapper,
   FadeIn,
 } from "../components/AnimationPrimitives";
-import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE, TEXT_STYLES, TRACKING } from "../design-system";
+import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE, TEXT_STYLES } from "../design-system";
 
 export interface KpiCounterProps {
   label: string;
@@ -37,18 +37,18 @@ export const KpiCounter: React.FC<KpiCounterProps> = ({
         {/* Corner badge */}
         <CornerBadge label={label} value={formatted} />
 
-        {/* Main content — left-aligned, upper-middle */}
-        <div style={{ padding: "0 140px", width: "100%", alignSelf: "flex-start", marginTop: 200 }}>
+        {/* Main content — centered vertically, left-padded */}
+        <div style={{ padding: "0 60px", width: "100%" }}>
           <HeroStack
             label={label}
             value={formatted}
             ghostValue={formatted}
             accentColor={accentColor}
-            align="left"
+            align="center"
           />
 
           {/* Animated count-up overlaid on the hero position */}
-          <div style={{ position: "relative", marginTop: -TYPE_SCALE.hero - 10 }}>
+          <div style={{ position: "relative", marginTop: -TYPE_SCALE.hero - 10, textAlign: "center" }}>
             <CountUpNumber
               value={value}
               prefix={prefix}
@@ -65,10 +65,10 @@ export const KpiCounter: React.FC<KpiCounterProps> = ({
 
           {/* Accent underline */}
           <FadeIn durationFrames={8} delay={14}>
-            <div style={{ marginTop: 16 }}>
+            <div style={{ marginTop: 16, display: "flex", justifyContent: "center" }}>
               <DrawLine
                 color={accentColor}
-                width={160}
+                width={140}
                 thickness={4}
                 durationFrames={14}
                 delay={16}

@@ -99,8 +99,11 @@ export function proBgStyle(
 }
 
 // ── Rendering defaults ──────────────────────────────────────────────
-export const DEFAULT_WIDTH = 1920;
-export const DEFAULT_HEIGHT = 1080;
+// Portrait 9:16 to match final short-form video output (1080x1920).
+// The FFmpeg pipeline scales Remotion output to 1080x1920; rendering
+// natively at that size avoids any lossy center-crop.
+export const DEFAULT_WIDTH = 1080;
+export const DEFAULT_HEIGHT = 1920;
 export const DEFAULT_FPS = 30;
 
 // ── Budget caps ─────────────────────────────────────────────────────
