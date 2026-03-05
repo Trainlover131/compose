@@ -279,7 +279,7 @@ export const GridOverlay: React.FC<{ opacity?: number }> = ({ opacity = 0.10 }) 
       pointerEvents: "none",
       opacity,
       backgroundImage: `linear-gradient(to right, rgba(255,255,255,0.10) 1px, transparent 1px)`,
-      backgroundSize: "180px 100%",
+      backgroundSize: "108px 100%",
       mixBlendMode: "overlay",
     }}
   />
@@ -374,7 +374,7 @@ export const ProSceneWrapper: React.FC<{
       {/* Layer 1: Grid */}
       {isDark && <GridOverlay opacity={OPACITY.grid} />}
       {/* Layer 2: Asymmetric ambient glow (bottom-right) */}
-      {isDark && <AmbientGlow color={accentColor} size={850} x="70%" y="75%" opacity={0.16} />}
+      {isDark && <AmbientGlow color={accentColor} size={600} x="60%" y="70%" opacity={0.16} />}
       {/* Layer 3: Fog overlay */}
       {isDark && <FogOverlay color={accentColor} opacity={0.20} />}
       {/* Layer 4: Main content */}
@@ -453,7 +453,7 @@ export const HeroStack: React.FC<{
           left: align === "center" ? "50%" : 0,
           transform: align === "center" ? "translateX(-50%)" : "none",
           ...TEXT_STYLES.heroNumber,
-          fontSize: TYPE_SCALE.hero + 40,
+          fontSize: TYPE_SCALE.hero + 20,
           color: PALETTE.white,
           opacity: OPACITY.ghost,
           filter: "blur(2px)",
@@ -503,8 +503,8 @@ export const CornerBadge: React.FC<{
     <div
       style={{
         position: "absolute",
-        top: 48,
-        right: 48,
+        top: 40,
+        right: 36,
         zIndex: 2,
         opacity: op,
         transform: `translateY(${slide}px)`,

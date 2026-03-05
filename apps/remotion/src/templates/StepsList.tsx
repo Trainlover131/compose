@@ -26,10 +26,10 @@ export const StepsList: React.FC<StepsListProps> = ({
   return (
     <AbsoluteFill>
       <ProSceneWrapper bg={bg} accentColor={accentColor} bgStyle={bgStyle}>
-        <div style={{ padding: "0 140px", width: "100%", alignSelf: "flex-start", marginTop: 140 }}>
+        <div style={{ padding: "0 60px", width: "100%" }}>
           {/* Small label */}
           <FadeIn durationFrames={8} delay={3}>
-            <p style={{ ...TEXT_STYLES.label, fontSize: TYPE_SCALE.caption, color: PALETTE.white, marginBottom: 8 }}>
+            <p style={{ ...TEXT_STYLES.label, fontSize: TYPE_SCALE.caption, color: PALETTE.white, marginBottom: 8, textAlign: "center" }}>
               {title}
             </p>
           </FadeIn>
@@ -39,17 +39,18 @@ export const StepsList: React.FC<StepsListProps> = ({
             <h1
               style={{
                 color: foreground,
-                fontSize: TYPE_SCALE.title,
+                fontSize: TYPE_SCALE.title - 4,
                 fontWeight: 700,
                 fontFamily: FONTS.display,
-                marginBottom: 40,
+                marginBottom: 36,
+                textAlign: "center",
               }}
             >
               {title}
             </h1>
           </SlideUp>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 22, maxWidth: 1400 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 960, margin: "0 auto" }}>
             {steps.slice(0, 8).map((step, i) => {
               const delay = baseDelay + i * staggerDelay;
               const progress = interpolate(
@@ -65,45 +66,30 @@ export const StepsList: React.FC<StepsListProps> = ({
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    gap: 18,
+                    gap: 16,
                     opacity: progress,
                     transform: `translateY(${(1 - progress) * 16}px)`,
                   }}
                 >
                   <div
                     style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 18,
+                      width: 34,
+                      height: 34,
+                      borderRadius: 17,
                       backgroundColor: accentColor,
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
                       flexShrink: 0,
                       transform: `scale(${progress})`,
-                      boxShadow: `0 0 16px ${accentColor}33`,
+                      boxShadow: `0 0 14px ${accentColor}33`,
                     }}
                   >
-                    <span
-                      style={{
-                        color: "#FFFFFF",
-                        fontSize: TYPE_SCALE.micro + 2,
-                        fontWeight: 700,
-                        fontFamily: FONTS.ui,
-                      }}
-                    >
+                    <span style={{ color: "#FFFFFF", fontSize: TYPE_SCALE.micro, fontWeight: 700, fontFamily: FONTS.ui }}>
                       {i + 1}
                     </span>
                   </div>
-                  <p
-                    style={{
-                      color: foreground,
-                      fontSize: TYPE_SCALE.subtitle - 2,
-                      fontWeight: 500,
-                      lineHeight: 1.3,
-                      fontFamily: FONTS.ui,
-                    }}
-                  >
+                  <p style={{ color: foreground, fontSize: TYPE_SCALE.body + 2, fontWeight: 500, lineHeight: 1.3, fontFamily: FONTS.ui }}>
                     {step}
                   </p>
                 </div>

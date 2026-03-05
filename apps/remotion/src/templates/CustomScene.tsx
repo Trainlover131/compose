@@ -2,8 +2,7 @@
  * CustomRemotionScene: renders a CustomRemotionSceneSpec into a composition.
  *
  * V3 — uses Swishy display stack (ProSceneWrapper + typography tokens).
- * The spec is a strict JSON contract. Every element compiles down to the
- * allowed animation primitives from the SUPACUT design system.
+ * Portrait 1080x1920 layout.
  */
 import React from "react";
 import { AbsoluteFill } from "remotion";
@@ -111,7 +110,6 @@ const ElementRenderer: React.FC<{
   fontFamily: string;
 }> = ({ el, index, foreground, accentColor, fontFamily }) => {
   const primitive = el.animation_primitives[0] || "FadeIn";
-  // Use display/ui fonts; never default to serif
   const resolvedFont = fontFamily === "Georgia" || fontFamily === "Georgia, serif"
     ? FONTS.display
     : (fontFamily || FONTS.display);
@@ -124,11 +122,11 @@ const ElementRenderer: React.FC<{
         <p
           style={{
             color: foreground,
-            fontSize: TYPE_SCALE.title - 4,
+            fontSize: TYPE_SCALE.title - 8,
             fontWeight: 600,
             fontFamily: resolvedFont,
             textAlign: el.layout === "center" ? "center" : "left",
-            maxWidth: 1400,
+            maxWidth: 960,
             lineHeight: 1.4,
           }}
         >
@@ -146,7 +144,7 @@ const ElementRenderer: React.FC<{
           delay={index * 5}
           style={{
             ...TEXT_STYLES.heroNumber,
-            fontSize: TYPE_SCALE.hero - 16,
+            fontSize: TYPE_SCALE.hero - 24,
             color: foreground,
           }}
         />
@@ -156,7 +154,7 @@ const ElementRenderer: React.FC<{
       content = (
         <DrawLine
           color={accentColor}
-          width={Number(el.data?.width ?? 120)}
+          width={Number(el.data?.width ?? 100)}
           thickness={Number(el.data?.thickness ?? 3)}
           durationFrames={14}
           delay={index * 5}
@@ -167,18 +165,18 @@ const ElementRenderer: React.FC<{
       content = (
         <div
           style={{
-            width: Number(el.data?.width ?? 80),
-            height: Number(el.data?.height ?? 80),
+            width: Number(el.data?.width ?? 60),
+            height: Number(el.data?.height ?? 60),
             backgroundColor: accentColor,
             borderRadius: Number(el.data?.borderRadius ?? 8),
-            boxShadow: `0 0 24px ${accentColor}22`,
+            boxShadow: `0 0 20px ${accentColor}22`,
           }}
         />
       );
       break;
     default:
       content = (
-        <p style={{ color: foreground, fontSize: TYPE_SCALE.subtitle, fontFamily: resolvedFont }}>
+        <p style={{ color: foreground, fontSize: TYPE_SCALE.subtitle - 2, fontFamily: resolvedFont }}>
           {el.text || ""}
         </p>
       );
@@ -192,7 +190,6 @@ const ElementRenderer: React.FC<{
 export const CustomScene: React.FC<CustomSceneProps> = ({ spec }) => {
   const foreground = fgColor(spec.bg);
   const rawFont = spec.typography.primary_font || FONTS.display;
-  // Never default to serif in custom scenes
   const fontFamily = rawFont === "Georgia" || rawFont === "Georgia, serif"
     ? FONTS.display
     : rawFont;
@@ -212,10 +209,10 @@ export const CustomScene: React.FC<CustomSceneProps> = ({ spec }) => {
           style={{
             display: "flex",
             flexDirection: "column",
-            alignItems: "flex-start",
+            alignItems: "center",
             justifyContent: "center",
-            gap: 18,
-            padding: "0 140px",
+            gap: 16,
+            padding: "0 60px",
             fontFamily,
             width: "100%",
           }}

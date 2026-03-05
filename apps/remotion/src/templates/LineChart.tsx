@@ -18,9 +18,11 @@ export interface LineChartProps {
   variant?: "swishy" | "chart";
 }
 
-const CHART_MARGIN = { top: 40, right: 60, bottom: 60, left: 60 };
-const CHART_W = 1920 - 280 - CHART_MARGIN.left - CHART_MARGIN.right; // padded for left layout
-const CHART_H = 420;
+// Portrait-aware chart dimensions (1080px wide canvas)
+const CHART_PAD = 60;
+const CHART_MARGIN = { top: 30, right: 30, bottom: 50, left: 30 };
+const CHART_W = 1080 - CHART_PAD * 2 - CHART_MARGIN.left - CHART_MARGIN.right;
+const CHART_H = 600;
 const SVG_W = CHART_W + CHART_MARGIN.left + CHART_MARGIN.right;
 const SVG_H = CHART_H + CHART_MARGIN.top + CHART_MARGIN.bottom;
 
@@ -62,8 +64,6 @@ export const LineChart: React.FC<LineChartProps> = ({
 
   const pathPoints = points.map((p) => `${toSvgX(p.x)},${toSvgY(p.y)}`);
   const pathD = `M ${pathPoints.join(" L ")}`;
-
-  // Area fill path
   const areaD = `${pathD} L ${toSvgX(points[points.length - 1].x)},${CHART_MARGIN.top + CHART_H} L ${toSvgX(points[0].x)},${CHART_MARGIN.top + CHART_H} Z`;
 
   let totalLen = 0;
@@ -76,28 +76,27 @@ export const LineChart: React.FC<LineChartProps> = ({
   const glowOpacity = interpolate(drawProgress, [0, 0.3], [0, 0.35], {
     extrapolateLeft: "clamp", extrapolateRight: "clamp",
   });
-
   const areaOpacity = interpolate(drawProgress, [0.1, 0.6], [0, 0.15], {
     extrapolateLeft: "clamp", extrapolateRight: "clamp",
   });
 
   const formattedLast = lastY.toLocaleString();
-  const heroValue = yLabel === "$" || title.toLowerCase().includes("cost") || title.toLowerCase().includes("revenue")
+  const heroValue = yLabel === "$" || title.toLowerCase().includes("cost") || title.toLowerCase().includes("revenue") || title.toLowerCase().includes("rent") || title.toLowerCase().includes("price")
     ? `$${formattedLast}` : formattedLast;
 
   return (
     <AbsoluteFill>
       <ProSceneWrapper bg={bg} accentColor={accentColor} bgStyle={bgStyle}>
-        {/* Swishy: HeroStack top-left + badge */}
+        {/* Swishy: HeroStack upper area + badge */}
         {isSwishy && (
           <>
-            <div style={{ position: "absolute", top: 80, left: 140, zIndex: 2 }}>
+            <div style={{ position: "absolute", top: 340, left: 60, right: 60, zIndex: 2 }}>
               <HeroStack
                 label={title}
                 value={heroValue}
                 ghostValue={heroValue}
                 accentColor={accentColor}
-                align="left"
+                align="center"
               />
             </div>
             <CornerBadge label={yLabel || title.substring(0, 12).toUpperCase()} value={heroValue} />
@@ -113,7 +112,7 @@ export const LineChart: React.FC<LineChartProps> = ({
                 fontSize: TYPE_SCALE.title,
                 fontWeight: 700,
                 marginBottom: 20,
-                textAlign: "left",
+                textAlign: "center",
                 fontFamily: FONTS.display,
               }}
             >
@@ -122,12 +121,12 @@ export const LineChart: React.FC<LineChartProps> = ({
           </FadeIn>
         )}
 
-        {/* Chart SVG — positioned lower in swishy mode */}
+        {/* Chart SVG — positioned in lower portion for portrait */}
         <div style={{
           position: isSwishy ? "absolute" : "relative",
-          bottom: isSwishy ? 60 : undefined,
-          left: isSwishy ? 100 : undefined,
-          right: isSwishy ? 100 : undefined,
+          bottom: isSwishy ? 300 : undefined,
+          left: isSwishy ? CHART_PAD : undefined,
+          right: isSwishy ? CHART_PAD : undefined,
         }}>
           <svg width={SVG_W} height={SVG_H} viewBox={`0 0 ${SVG_W} ${SVG_H}`}>
             <defs>
@@ -147,7 +146,7 @@ export const LineChart: React.FC<LineChartProps> = ({
               </filter>
             </defs>
 
-            {/* Axes (only in chart mode) */}
+            {/* Axes (chart mode only) */}
             {!isSwishy && (
               <>
                 <line x1={CHART_MARGIN.left} y1={CHART_MARGIN.top} x2={CHART_MARGIN.left} y2={CHART_MARGIN.top + CHART_H} stroke={muted} strokeWidth={1} opacity={0.2} />
@@ -155,15 +154,13 @@ export const LineChart: React.FC<LineChartProps> = ({
               </>
             )}
 
-            {/* Area fill under line */}
+            {/* Area fill */}
             <path d={areaD} fill="url(#areaFill)" opacity={areaOpacity} />
 
-            {/* 3-pass glow stack: fat blur */}
-            <path d={pathD} fill="none" stroke={accentColor} strokeWidth={20} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={totalLen} strokeDashoffset={totalLen * (1 - drawProgress)} opacity={glowOpacity * 0.4} filter="url(#lineGlow)" />
-            {/* Medium blur */}
-            <path d={pathD} fill="none" stroke={accentColor} strokeWidth={10} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={totalLen} strokeDashoffset={totalLen * (1 - drawProgress)} opacity={glowOpacity * 0.6} filter="url(#lineGlowMedium)" />
-            {/* Sharp line */}
-            <path d={pathD} fill="none" stroke={accentColor} strokeWidth={3.5} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={totalLen} strokeDashoffset={totalLen * (1 - drawProgress)} />
+            {/* 3-pass glow stack */}
+            <path d={pathD} fill="none" stroke={accentColor} strokeWidth={18} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={totalLen} strokeDashoffset={totalLen * (1 - drawProgress)} opacity={glowOpacity * 0.4} filter="url(#lineGlow)" />
+            <path d={pathD} fill="none" stroke={accentColor} strokeWidth={8} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={totalLen} strokeDashoffset={totalLen * (1 - drawProgress)} opacity={glowOpacity * 0.6} filter="url(#lineGlowMedium)" />
+            <path d={pathD} fill="none" stroke={accentColor} strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" strokeDasharray={totalLen} strokeDashoffset={totalLen * (1 - drawProgress)} />
 
             {/* Data points */}
             {points.map((p, i) => {
@@ -175,8 +172,8 @@ export const LineChart: React.FC<LineChartProps> = ({
               );
               return (
                 <React.Fragment key={i}>
-                  <circle cx={toSvgX(p.x)} cy={toSvgY(p.y)} r={12 * pp} fill={accentColor} opacity={pp * 0.2} />
-                  <circle cx={toSvgX(p.x)} cy={toSvgY(p.y)} r={5 * pp} fill={accentColor} opacity={pp} />
+                  <circle cx={toSvgX(p.x)} cy={toSvgY(p.y)} r={10 * pp} fill={accentColor} opacity={pp * 0.2} />
+                  <circle cx={toSvgX(p.x)} cy={toSvgY(p.y)} r={4 * pp} fill={accentColor} opacity={pp} />
                 </React.Fragment>
               );
             })}
