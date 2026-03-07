@@ -1,12 +1,19 @@
 /**
- * SUPACUT REMOTION DESIGN SYSTEM (v2 — portrait-native)
+ * SUPACUT REMOTION DESIGN SYSTEM (v2)
  *
- * All templates render natively at 1080x1920 (9:16 portrait).
- * Typography: Inter primary, Space Grotesk display, SF Mono for code.
- * Serif is NEVER a default — only used if explicitly requested.
+ * Production-quality motion graphics. Polished, cinematic feel inspired by
+ * Swishy.AI-style design: dark gradient backgrounds with radial accent glow,
+ * subtle film grain, vignette, generous whitespace, spring-physics animations,
+ * and sharp typographic hierarchy.
+ *
+ * Typography: Inter primary, Space Grotesk display, SF Mono for code only.
+ * Serif is never a default — only used if explicitly requested (e.g. QuoteHighlight serif=true).
+ * Limit to 1 accent color per scene, restrained backgrounds.
  */
 
+// We need React types for CSSProperties
 import type React from "react";
+
 import { interFamily, spaceGroteskFamily } from "./fonts";
 
 // ── Sans fallback stack (never serif) ────────────────────────────────
@@ -16,37 +23,41 @@ const SANS_FALLBACK = ", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans
 export const FONTS = {
   /** UI / body text — Inter loaded via @remotion/google-fonts */
   ui: interFamily + SANS_FALLBACK,
-  /** Display / headline — Space Grotesk */
+  /** Display / headline — Space Grotesk loaded via @remotion/google-fonts */
   display: spaceGroteskFamily + SANS_FALLBACK,
   /** Code — system monospace stack */
   mono: "SF Mono, SFMono-Regular, ui-monospace, Menlo, monospace",
-  /** Legacy alias — resolves to Inter (sans). Never serif by default. */
+  /** Legacy alias — always resolves to ui (sans). Never serif by default. */
   primary: interFamily + SANS_FALLBACK,
-  /** Serif — ONLY for explicit opt-in (e.g. QuoteHighlight serif=true) */
+  /** Serif — only for explicit opt-in (e.g. QuoteHighlight serif=true) */
   serif: "Georgia, serif",
 } as const;
 
 export const MAX_FONT_FAMILIES_PER_SCENE = 2;
 
-// ── Type scale (portrait-optimized) ─────────────────────────────────
+// ── Type scale (for consistent hierarchy) ───────────────────────────
 export const TYPE_SCALE = {
-  hero: 120,       // primary number / headline (fits 1080 width)
-  title: 48,       // section title
-  subtitle: 32,    // label, subtitle
-  body: 26,        // body text, bullets
-  caption: 20,     // muted captions, axis labels
-  micro: 14,       // fine print
+  hero: 128,       // primary number / headline
+  title: 52,       // section title
+  subtitle: 36,    // label, subtitle
+  body: 28,        // body text, bullets
+  caption: 22,     // muted captions, axis labels
+  micro: 16,       // fine print
 } as const;
 
 // ── Tracking (letter-spacing tokens) ────────────────────────────────
 export const TRACKING = {
+  /** Small uppercase labels */
   label: "0.14em",
+  /** Large hero numbers */
   number: "-0.03em",
 } as const;
 
 // ── Opacity tokens ──────────────────────────────────────────────────
 export const OPACITY = {
+  /** Small label badges */
   label: 0.6,
+  /** Ghost / background echo text */
   ghost: 0.07,
 } as const;
 
@@ -97,7 +108,8 @@ export function mutedColor(bg: "dark" | "light" | "subtle_gradient"): string {
   return PALETTE.muted;
 }
 
-// ── Pro background style ────────────────────────────────────────────
+// ── Pro background styles ───────────────────────────────────────────
+/** Returns a CSS background for a dark scene with a radial accent glow. */
 export function proBgStyle(
   bg: "dark" | "light" | "subtle_gradient",
   accentColor: string = PALETTE.default_accent,
@@ -105,16 +117,17 @@ export function proBgStyle(
   if (bg === "light") {
     return { backgroundColor: PALETTE.light_bg };
   }
-  const glowColor = accentColor + "18";
+  // Dark scenes get a radial glow behind the content
+  const glowColor = accentColor + "18"; // ~9% opacity
   return {
-    background: `radial-gradient(ellipse 80% 40% at 50% 45%, ${glowColor} 0%, ${PALETTE.dark_bg} 100%)`,
+    background: `radial-gradient(ellipse 70% 50% at 50% 50%, ${glowColor} 0%, ${PALETTE.dark_bg} 100%)`,
     backgroundColor: PALETTE.dark_bg,
   };
 }
 
-// ── Rendering defaults (PORTRAIT: 1080x1920) ────────────────────────
-export const DEFAULT_WIDTH = 1080;
-export const DEFAULT_HEIGHT = 1920;
+// ── Rendering defaults ──────────────────────────────────────────────
+export const DEFAULT_WIDTH = 1920;
+export const DEFAULT_HEIGHT = 1080;
 export const DEFAULT_FPS = 30;
 
 // ── Budget caps ─────────────────────────────────────────────────────

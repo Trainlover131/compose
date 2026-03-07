@@ -1,7 +1,7 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame, interpolate, Easing } from "remotion";
 import { FadeIn, SlideUp, ProSceneWrapper } from "../components/AnimationPrimitives";
-import { FONTS, PALETTE, proBgStyle, fgColor } from "../design-system";
+import { FONTS, PALETTE, proBgStyle, fgColor, TYPE_SCALE } from "../design-system";
 
 export interface CodeCardProps {
   title?: string;
@@ -45,15 +45,15 @@ export const CodeCard: React.FC<CodeCardProps> = ({
     <AbsoluteFill>
       <ProSceneWrapper bg={bg} accentColor={accentColor} bgStyle={bgStyle}>
         {title && (
-          <FadeIn durationFrames={12}>
+          <FadeIn durationFrames={10}>
             <h1
               style={{
                 color: foreground,
-                fontSize: 40,
+                fontSize: TYPE_SCALE.title - 4,
                 fontWeight: 700,
-                fontFamily: FONTS.display,
-                marginBottom: 32,
+                marginBottom: 28,
                 textAlign: "center",
+                fontFamily: FONTS.primary,
               }}
             >
               {title}
@@ -61,18 +61,19 @@ export const CodeCard: React.FC<CodeCardProps> = ({
           </FadeIn>
         )}
 
-        <SlideUp durationFrames={15} delay={6}>
+        <SlideUp durationFrames={12} delay={4}>
           <div
             style={{
               backgroundColor: codeBgColor,
               border: `1px solid ${codeFrameColor}`,
               borderRadius: 16,
-              padding: "36px 40px",
-              maxWidth: 920,
+              padding: "36px 44px",
+              maxWidth: 1500,
               width: "100%",
+              boxShadow: `0 8px 32px rgba(0,0,0,0.3)`,
             }}
           >
-            <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
               <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#FF5F57" }} />
               <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#FEBC2E" }} />
               <div style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#28C840" }} />
@@ -81,7 +82,7 @@ export const CodeCard: React.FC<CodeCardProps> = ({
             <pre
               style={{
                 fontFamily: FONTS.mono,
-                fontSize: 24,
+                fontSize: TYPE_SCALE.body,
                 lineHeight: 1.6,
                 color: foreground,
                 margin: 0,
@@ -91,7 +92,7 @@ export const CodeCard: React.FC<CodeCardProps> = ({
             >
               {visibleLines.map((line, i) => (
                 <React.Fragment key={i}>
-                  <span style={{ color: PALETTE.muted, fontSize: 18, fontFamily: FONTS.mono, marginRight: 16 }}>
+                  <span style={{ color: PALETTE.muted_dim, fontSize: TYPE_SCALE.caption, marginRight: 16 }}>
                     {String(i + 1).padStart(2, " ")}
                   </span>
                   {line}
