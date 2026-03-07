@@ -614,11 +614,13 @@ def build_remotion_filtergraph_entries(
             idx, rc["start"], rc["end"], ri_idx,
         )
 
-        # Remotion clips are now rendered natively at 1080x1920 (portrait).
-        # Only trim + position on timeline — no scale/crop needed.
+        # Prepare remotion clip: scale to 1080x1920 (cover mode: fit height, crop center)
+        # The remotion clip is authored 1920x1080 but final output is 9:16 (1080x1920).
+        # Cover: scale to fit height (1920), then center-crop to width (1080).
         filters.append(
             f"[{ri_idx}:v]trim=duration={dur:.3f},"
-            f"scale=1080:1920,"
+            f"scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,"
             f"setpts=PTS-STARTPTS+{rc['start']:.3f}/TB,"
             f"tpad=stop_mode=clone:stop_duration={dur:.3f}[{prep_label}]"
         )

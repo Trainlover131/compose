@@ -20,7 +20,7 @@ import {
   SubtleRotate3D,
   ProSceneWrapper,
 } from "../components/AnimationPrimitives";
-import { FONTS, bgColor, fgColor, PALETTE, BUDGET, proBgStyle } from "../design-system";
+import { FONTS, PALETTE, BUDGET, proBgStyle, fgColor, TYPE_SCALE } from "../design-system";
 import type { MotionPrimitive } from "../design-system";
 
 // ── CustomRemotionSceneSpec types ───────────────────────────────────
@@ -120,11 +120,11 @@ const ElementRenderer: React.FC<{
         <p
           style={{
             color: foreground,
-            fontSize: 40,
+            fontSize: TYPE_SCALE.title - 4,
             fontWeight: 600,
             fontFamily,
             textAlign: el.layout === "center" ? "center" : "left",
-            maxWidth: 900,
+            maxWidth: 1400,
             lineHeight: 1.4,
           }}
         >
@@ -142,7 +142,7 @@ const ElementRenderer: React.FC<{
           delay={index * 5}
           style={{
             color: foreground,
-            fontSize: 88,
+            fontSize: TYPE_SCALE.hero - 16,
             fontWeight: 700,
             fontFamily,
           }}
@@ -175,7 +175,7 @@ const ElementRenderer: React.FC<{
       break;
     default:
       content = (
-        <p style={{ color: foreground, fontSize: 32, fontFamily }}>
+        <p style={{ color: foreground, fontSize: TYPE_SCALE.subtitle, fontFamily }}>
           {el.text || ""}
         </p>
       );
@@ -190,7 +190,7 @@ export const CustomScene: React.FC<CustomSceneProps> = ({ spec }) => {
   const foreground = fgColor(spec.bg);
   const fontFamily = spec.typography.primary_font || FONTS.primary;
   const accentColor = spec.accent_color || PALETTE.default_accent;
-  const bgStyleProp = proBgStyle(spec.bg, accentColor);
+  const bgStyle = proBgStyle(spec.bg, accentColor);
 
   const maxEl = Math.min(
     spec.hard_limits?.max_elements ?? BUDGET.max_elements_per_scene,
@@ -200,15 +200,15 @@ export const CustomScene: React.FC<CustomSceneProps> = ({ spec }) => {
 
   return (
     <AbsoluteFill>
-      <ProSceneWrapper bg={spec.bg} accentColor={accentColor} bgStyle={bgStyleProp}>
+      <ProSceneWrapper bg={spec.bg} accentColor={accentColor} bgStyle={bgStyle}>
         <div
           style={{
             display: "flex",
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            gap: 24,
-            padding: "0 60px",
+            gap: 20,
+            padding: "0 120px",
             fontFamily,
           }}
         >
